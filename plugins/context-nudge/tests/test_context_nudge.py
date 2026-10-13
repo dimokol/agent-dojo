@@ -37,6 +37,28 @@ def assistant(tokens, seconds_ago=5, sidechain=False):
     }
 
 
+def boundary(post_tokens, seconds_ago=5):
+    """A compaction boundary (idle compaction, /compact or auto-compact)."""
+    return {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "timestamp": iso(seconds_ago),
+        "compactMetadata": {"trigger": "auto", "preTokens": 434_000, "postTokens": post_tokens},
+    }
+
+
+def away_summary(seconds_ago=5):
+    return {"type": "system", "subtype": "away_summary", "timestamp": iso(seconds_ago), "content": "recap"}
+
+
+def model_switch(seconds_ago=5):
+    return {
+        "type": "user",
+        "timestamp": iso(seconds_ago),
+        "message": {"role": "user", "content": "<local-command-stdout>Set model to claude-opus-5-5</local-command-stdout>"},
+    }
+
+
 class HookTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -169,6 +191,41 @@ class HookTest(unittest.TestCase):
         msg = self.run_hook()
         self.assertIn("idle", msg)
         self.assertIn("Context is at 300k", msg)
+
+    # after a compaction, /model or a recap
+
+    def test_compaction_uses_post_tokens_and_skips_the_idle_nudge(self):
+        self.write(assistant(434_000, seconds_ago=3 * 3600), boundary(19_000, seconds_ago=2 * 3600))
+        self.assertEqual(self.run_hook(), "")
+
+    def test_size_nudge_rearms_after_a_compaction(self):
+        self.write(assistant(300_000))
+        self.assertIn("300k tokens", self.run_hook())
+        self.write(assistant(300_000), boundary(20_000))
+        self.assertEqual(self.run_hook(), "")
+        self.write(assistant(300_000), boundary(20_000), assistant(310_000))
+        self.assertIn("310k tokens", self.run_hook())
+
+    def test_model_switch_counts_as_a_cold_cache(self):
+        self.write(assistant(200_000, seconds_ago=60), model_switch())
+        msg = self.run_hook()
+        self.assertIn("the model changed", msg)
+        self.assertNotIn("idle", msg)
+        self.assertEqual(self.run_hook(), "")
+
+    def test_model_switch_in_a_small_session_is_silent(self):
+        self.write(assistant(100_000, seconds_ago=60), model_switch())
+        self.assertEqual(self.run_hook(), "")
+
+    def test_away_summary_renews_the_cache(self):
+        self.write(assistant(200_000, seconds_ago=2 * 3600), away_summary(seconds_ago=5 * 60))
+        self.assertEqual(self.run_hook(), "")
+
+    def test_zero_usage_rows_after_a_compaction_do_not_hide_its_size(self):
+        empty = assistant(1010)
+        empty["message"]["usage"] = {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        self.write(assistant(434_000), boundary(260_000), empty)
+        self.assertIn("260k tokens", self.run_hook())
 
     # robustness
 

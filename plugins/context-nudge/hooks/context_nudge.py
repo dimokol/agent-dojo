@@ -9,7 +9,9 @@ block), shown at most once per threshold or idle gap:
    or /clear with a short hand-off. The hook never compacts for you.
 2. Cold cache. Typing into a big session after a long pause (60 minutes by
    default) re-writes the whole context at cache-write price. If the next thing
-   is a new task, a fresh session with a hand-off is cheaper.
+   is a new task, a fresh session with a hand-off is cheaper. Also after /model
+   (the cache is per model). Not after a compaction: the size then comes from
+   the boundary's postTokens, which is far below every threshold.
 
 Settings, each read from CLAUDE_PLUGIN_OPTION_<KEY>, then CONTEXT_NUDGE_<KEY>,
 then the default:
@@ -78,8 +80,27 @@ def state_dir():
     return os.path.expanduser("~/.cache/context-nudge")
 
 
+def epoch(ts):
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
 def last_usage(path):
-    """(context tokens, epoch seconds or None) of the newest main-thread assistant message."""
+    """What the next request will carry, read from the transcript tail.
+
+    Returns (context tokens, epoch seconds of the last cache use or None, cold
+    reason or None), or None. Normally that is the newest main-thread reply's
+    usage. Rows written after that reply can make it stale:
+    - compact_boundary (idle compaction, /compact, auto-compact): the old context
+      is gone, so the boundary's postTokens is the size. The new prefix was never
+      cached, so there is no warm cache to lose and the idle case is moot.
+    - away_summary: the recap request reads the main prefix's cache, which renews
+      it, so idle time counts from the recap.
+    - "Set model to" (/model): the cache belongs to the old model, so the next
+      prompt re-writes everything however recent the last reply was.
+    """
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
@@ -87,14 +108,30 @@ def last_usage(path):
             chunk = f.read()
     except OSError:
         return None
+    refreshed = None
+    cold = None
     for raw in reversed(chunk.splitlines()):
-        if b'"usage"' not in raw or b'"assistant"' not in raw:
+        marked = b'"compact_boundary"' in raw or b'"away_summary"' in raw or b"Set model to" in raw
+        if not marked and (b'"usage"' not in raw or b'"assistant"' not in raw):
             continue
         try:
             rec = json.loads(raw)
         except ValueError:
             continue
         if not isinstance(rec, dict) or rec.get("isSidechain"):
+            continue
+        kind = rec.get("type")
+        if kind == "system" and rec.get("subtype") == "compact_boundary":
+            post = (rec.get("compactMetadata") or {}).get("postTokens")
+            return (post if isinstance(post, int) else 0), epoch(rec.get("timestamp")), None
+        if kind == "system" and rec.get("subtype") == "away_summary":
+            refreshed = refreshed or epoch(rec.get("timestamp"))
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if kind == "user" and isinstance(content, str) and content.startswith("<local-command-stdout>Set model to"):
+            cold = cold or "model"
+            continue
+        if kind != "assistant":
             continue
         usage = (rec.get("message") or {}).get("usage")
         if not usage:
@@ -106,14 +143,10 @@ def last_usage(path):
         )
         if ctx <= 0:
             continue  # an empty usage record says nothing about the size
-        when = None
-        ts = rec.get("timestamp")
-        if ts:
-            try:
-                when = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                pass
-        return ctx, when
+        when = epoch(rec.get("timestamp"))
+        if refreshed and (when is None or refreshed > when):
+            when = refreshed
+        return ctx, when, cold
     return None
 
 
@@ -142,12 +175,22 @@ def save_state(directory, sid, state):
         pass
 
 
-def build_messages(ctx, when, state, thresholds, idle_seconds, idle_min_context, now):
+def build_messages(ctx, when, state, thresholds, idle_seconds, idle_min_context, now, cold=None):
     """Returns the messages to show; mutates state to remember what was shown."""
     messages = []
 
+    # Model switch: the cache is per model, so it is cold however recent the reply.
+    if cold == "model" and ctx >= idle_min_context:
+        if state.get("model_warned_for") != when:
+            state["model_warned_for"] = when
+            messages.append(
+                f"Context: {ctx // 1000}k tokens and the model changed, so the cache is cold and this "
+                "prompt re-reads all of it at full price. If this is a new task, /clear with a short "
+                "hand-off is cheaper."
+            )
+
     # Cold cache: judged against the previous reply, before this prompt lands.
-    if when and ctx >= idle_min_context and now - when >= idle_seconds:
+    elif when and ctx >= idle_min_context and now - when >= idle_seconds:
         if state.get("idle_warned_for") != when:
             state["idle_warned_for"] = when
             hours = (now - when) / 3600
@@ -185,7 +228,7 @@ def main():
     found = last_usage(path)
     if not found:
         return
-    ctx, when = found
+    ctx, when, cold = found
 
     thresholds = parse_thresholds(option("SIZE_THRESHOLDS_K", DEFAULT_THRESHOLDS_K))
     idle_seconds = number(option("IDLE_MINUTES", DEFAULT_IDLE_MINUTES), DEFAULT_IDLE_MINUTES) * 60
@@ -194,7 +237,7 @@ def main():
     directory = state_dir()
     state = load_state(directory, sid)
     before = dict(state)
-    messages = build_messages(ctx, when, state, thresholds, idle_seconds, idle_min_context, time.time())
+    messages = build_messages(ctx, when, state, thresholds, idle_seconds, idle_min_context, time.time(), cold)
     if messages or state != before:
         save_state(directory, sid, state)
     if messages:

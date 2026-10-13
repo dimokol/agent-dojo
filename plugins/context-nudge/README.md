@@ -9,7 +9,7 @@ A one-line nudge when a session's context passes 250k, 400k and 600k tokens, and
 
 Without the plugin system: add `hooks/context-nudge.sh` as a `UserPromptSubmit` hook in `settings.json`, with options in `env`.
 
-Each message shows once per threshold per session, goes to you (not the model), and never blocks the prompt. It re-arms when you `/compact` or `/clear` and the context shrinks.
+Each message shows once per threshold per session, goes to you (not the model), and never blocks the prompt. It re-arms when you `/compact` or `/clear` and the context shrinks. After a compaction it reads the compacted size, so it doesn't warn about a context that's already gone, and after `/model` it says the cache is cold, since the cache belongs to the old model.
 
 ## Config
 
