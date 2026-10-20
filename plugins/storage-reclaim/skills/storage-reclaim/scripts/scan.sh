@@ -32,6 +32,7 @@ ROWS=${STORAGE_RECLAIM_ROWS:-10}
 [[ $WT_SUFFIX == *'${'* ]] && WT_SUFFIX=
 [[ $roots_cfg == *'${'* ]] && roots_cfg=
 [[ $IDLE == <-> ]] || IDLE=7
+(( IDLE >= 1 )) || IDLE=1
 
 typeset -a ROOTS
 if [[ -n $roots_cfg ]]; then
@@ -70,21 +71,40 @@ bytes() {  # sets REPLY to the size of $1 in bytes; no subshell, so the memo sti
   k=$(du -xsk "$1" 2>/dev/null | awk '{ print $1 }')
   REPLY=$(( ${k:-0} * 1024 )); MEMO[$1]=$REPLY
 }
-sum_bytes() { local t=0 p; for p in "$@"; do bytes "$p"; (( t += REPLY )); done; REPLY=$t; }
+sum_bytes() {  # one du call for the lot: hardlinks shared between the paths count once
+  (( $# == 1 )) && { bytes "$1"; return; }
+  local t=0 p k
+  for p in "$@"; do [[ $p == $HOME/* && -n ${SZ[${p#$HOME/}]} ]] || { t=-1; break; }; (( t += ${SZ[${p#$HOME/}]} )); done
+  (( t >= 0 )) && { REPLY=$t; return; }
+  k=$(du -xsck "$@" 2>/dev/null | tail -1 | awk '{ print $1 }')
+  REPLY=$(( ${k:-0} * 1024 ))
+}
 
 # ---------------------------------------------------------------------------
 # What must not go: keep-lists, locks, other sessions' folders, anything in use.
 
 typeset -a NEVER=('*/.git' '*/.env*') KEEP LOCKED_TREES
+entry() {  # reply = the entry as written and as a real path (candidates are real paths)
+  local e=${1/#\~/$HOME} pre dir
+  while [[ $e == ?*/ ]]; do e=${e%/}; done
+  reply=("$e")
+  if [[ $e != *[*?]* ]]; then
+    [[ -e $e ]] && reply+=("${e:A}")
+  else
+    pre=${e%%[*?]*}; dir=${pre%/*}
+    [[ -d $dir ]] && reply+=("${dir:A}${e#$dir}")
+  fi
+  reply=(${(u)reply})
+}
 while IFS=$'\t' read -r p _; do
   [[ -z $p || $p == \#* ]] && continue
-  NEVER+=("${p/#\~/$HOME}")
+  entry "$p"; NEVER+=($reply)
 done < "$conf/never-touch.txt"
 while IFS=$'\t' read -r d p dec re _; do
   [[ -z $d || $d == \#* || $d == date ]] && continue
   [[ $dec == keep || $dec == 'user handles' ]] || continue
   [[ $re == <->-<->-<-> && $re < $today ]] && continue   # recheck date passed: propose again
-  KEEP+=("${p/#\~/$HOME}")
+  entry "$p"; KEEP+=($reply)
 done < "$conf/decisions.tsv"
 covers() {  # covers PATH ENTRY...: PATH is an entry, sits under one, or holds one. Entries are literal.
   local p=$1 e; shift
@@ -92,14 +112,16 @@ covers() {  # covers PATH ENTRY...: PATH is an entry, sits under one, or holds o
   return 1
 }
 never() {  # like covers, but never-touch lines with * or ? are globs
-  local p=$1 pat
+  local p=$1 pat g hit
   covers "$p" ${NEVER:#*[*?]*} && return 0
   for pat in ${(M)NEVER:#*[*?]*}; do
-    [[ $p == ${~pat} || $p == ${~pat}/* ]] && return 0
+    # Only * and ? are wildcards: escape what extended_glob would read in a name like "C#tool (old)".
+    g=${pat//(#m)[\#\(\)\|\~\^\[\]\<\>]/\\$MATCH}
+    [[ $p == ${~g} || $p == ${~g}/* ]] && return 0
     [[ $pat == */.git || $pat == */.env\* ]] && continue   # built-ins: every repo holds one
     # A candidate that holds a match would delete it too.
     if [[ $pat == /* ]]; then
-      local hit; for hit in ${~pat}(ND); do [[ $hit == "$p"/* ]] && return 0; done
+      for hit in ${~g}(ND); do [[ $hit == "$p"/* ]] && return 0; done
     elif [[ -d $p ]]; then
       [[ -n $(find "$p" -maxdepth 8 -path "$pat" -print -quit 2>/dev/null) ]] && return 0
     fi
@@ -116,15 +138,36 @@ fi
 # Every open file, working directory and command line, gathered once (about 30 s).
 { lsof -Fn 2>/dev/null | sed -n 's/^n//p'; ps -axo command= 2>/dev/null; } | sort -u > "$db"
 typeset -a CWDS=(${(f)"$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u)"})
+# Paths named on command lines, relative ones resolved against the process's cwd: a dev server
+# started from a parent folder (`python app1/server.py`, `npm --prefix app1 run dev`) is inside app1.
+typeset -aU ARGPATHS
+typeset -A PCWD
+for l in ${(f)"$(lsof -a -d cwd -Fpn 2>/dev/null)"}; do
+  case $l in p*) pid=${l#p} ;; n*) PCWD[$pid]=${l#n} ;; esac
+done
+for l in ${(f)"$(ps -axo pid=,command= 2>/dev/null)"}; do
+  l=${l## #}; pid=${l%% *}; cwd=${PCWD[$pid]}
+  for tok in ${(z)${l#* }}; do
+    tok=${(Q)tok}; tok=${tok#--*=}
+    [[ $tok == -* || $tok == '' ]] && continue
+    [[ $tok == /* ]] || { [[ -n $cwd ]] || continue; tok=$cwd/$tok; }
+    [[ $tok == $HOME/?* && -e $tok ]] && ARGPATHS+=("${tok:A}")
+  done
+done
+named_in() {  # named_in DIR: a command line names DIR or something inside it
+  local a; for a in $ARGPATHS; do [[ $a == $1 || $a == $1/* ]] && return 0; done; return 1
+}
 used() {  # used PATH [PROJECT]: a process has it open, names it, or runs inside the project above it
   grep -qF -- "$1" "$db" && return 0
   [[ -n $2 ]] || return 1
   local c
   for c in $CWDS; do [[ $1 == $c/* && ( $c == $2 || $c == $2/* ) ]] && return 0; done
-  return 1
+  named_in "$2"
 }
 why_held() {
   never "$1" && { print never-touch; return; }
+  # A git checkout inside (pip -e sources in .venv/src, a dev pod) may hold unpushed work.
+  [[ $1 != $2 && -d $1 && -n $(find "$1" -maxdepth 4 -name .git -print -quit 2>/dev/null) ]] && { print 'holds a git checkout'; return; }
   covers "$1" $KEEP && { print kept; return; }
   [[ -n $WT_SUFFIX && ( $1 == *$WT_SUFFIX/* || $1 == *$WT_SUFFIX ) ]] && { print 'session folder'; return; }
   local t; for t in $LOCKED_TREES; do [[ $1 == $t || $1 == $t/* ]] && { print locked; return; }; done
@@ -170,6 +213,7 @@ idle() {  # idle DIR: no commit, file edit or agent session in IDLE days, nothin
   session_recent "$t" && { IDLE_NOTE='agent session'; return 1; }
   grep -qF -- "$t/" "$db" && { IDLE_NOTE='running'; return 1; }
   for c in $CWDS; do [[ $c == $t || $c == $t/* ]] && { IDLE_NOTE='running'; return 1; }; done
+  named_in "$t" && { IDLE_NOTE='running'; return 1; }
   IDLE_NOTE=$(( ct ? (now - ct) / 86400 : -1 ))
   return 0
 }
@@ -245,7 +289,9 @@ remote_refs() {  # read-only: no fetch, nothing local changes
   GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5} \
     perl -e 'alarm shift; exec @ARGV' 6 git -C "$1" ls-remote --symref origin HEAD 'refs/heads/*' 2>/dev/null
 }
-LOCAL_ONLY_SKIP='(^|/)(node_modules|\.next|\.nuxt|\.output|\.data|dist|build|out|\.turbo|\.cache|\.vite|coverage|\.expo|\.gradle|\.cxx|Pods|DerivedData|__pycache__|\.venv|venv|target|\.dart_tool)(/|$)|\.DS_Store$|\.log$|\.tsbuildinfo$'
+# Skipped only when an install or a build provably recreates it. Generic names (dist, build,
+# .data, .cache) can hold a local database or the only copy, so they count as local-only.
+LOCAL_ONLY_SKIP='(^|/)(node_modules|\.next|\.nuxt|\.turbo|\.vite|\.expo|\.gradle|\.cxx|Pods|DerivedData|__pycache__|\.venv|venv|\.dart_tool)(/|$)|\.DS_Store$|\.tsbuildinfo$'
 wt_rows=()
 repos=(); (( $#ROOTS )) && repos=(${(f)"$(find $ROOTS -maxdepth 4 -name .git -type d -prune 2>/dev/null)"})
 wtrepos=()
@@ -273,24 +319,27 @@ for repo in $wtrepos; do
             print -r -- "STALE (folder gone): $(tilde "$wt")  -> git -C $(tilde "$repo") worktree prune"
           else
             bytes "$wt"; size=$REPLY
-            dirty=$(git -C "$wt" status --porcelain 2>/dev/null | grep -c .)
+            # A git status that fails tells nothing: treat the worktree as dirty.
+            if st=$(git -C "$wt" status --porcelain 2>/dev/null); then dirty=${#${(f)st}}; else dirty='?'; fi
+
             ct=$(git -C "$wt" log -1 --format=%ct 2>/dev/null); ct=${ct:-0}
             on=0 merged=0 how=
             rb=$(print -r -- "$refs" | awk -v r="refs/heads/$br" '$2 == r { print $1 }')
             if (( online )); then
               [[ -n $rb && ( $rb == $sha || ( -n $(git -C "$wt" cat-file -t "$rb" 2>/dev/null) && $(git -C "$wt" merge-base --is-ancestor "$sha" "$rb" 2>/dev/null; print $?) == 0 ) ) ]] && on=1
             else
-              (( $(git -C "$wt" branch -r --contains "$sha" 2>/dev/null | grep -c .) )) && on=1
+              # Origin unreachable or gone: local remote refs may be stale, so nothing is proven.
               last=$(stat -f %m "$repo/.git/FETCH_HEAD" 2>/dev/null || stat -c %Y "$repo/.git/FETCH_HEAD" 2>/dev/null)
-              how=", offline, last fetch ${last:+$(( (now - last) / 86400 )) d ago}${last:-never}"
+              how=", origin unreachable, last fetch ${last:+$(( (now - last) / 86400 )) d ago}${last:-never}"
             fi
-            for ref in $rdef ${def:+refs/remotes/origin/$def}; do
+            (( online )) && for ref in $rdef; do
               git -C "$wt" cat-file -e "$ref^{commit}" 2>/dev/null && git -C "$wt" merge-base --is-ancestor "$sha" "$ref" 2>/dev/null && { merged=1; break; }
             done
             # Ignored files no install or build recreates (.env and the like) live only here;
             # the ones identical to the main checkout's copy don't count.
             lo=0
-            for f in ${(f)"$(git -C "$wt" status --ignored --porcelain 2>/dev/null | sed -n 's/^!! //p' | grep -vE "$LOCAL_ONLY_SKIP")"}; do
+            ign=$(git -C "$wt" status --ignored --porcelain 2>/dev/null) || lo='?'
+            [[ $lo == 0 ]] && for f in ${(f)"$(print -r -- "$ign" | sed -n 's/^!! //p' | grep -vE "$LOCAL_ONLY_SKIP")"}; do
               f=${f%/}
               [[ -f $wt/$f ]] && cmp -s "$wt/$f" "$main/$f" && continue
               [[ -d $wt/$f ]] && diff -rq "$wt/$f" "$main/$f" >/dev/null 2>&1 && continue
@@ -302,19 +351,19 @@ for repo in $wtrepos; do
             elif (( now - ct < 7200 )); then flag=' ACTIVE (commit under 2 h ago)'
             fi
             # A squash merge leaves no ancestor to find; ask GitHub, only when it decides the row.
-            if [[ -z $flag && -n $br ]] && (( ! on && ! merged && dirty == 0 && lo == 0 )) && command -v gh >/dev/null; then
+            if [[ -z $flag && -n $br && $dirty == 0 && $lo == 0 ]] && (( online && ! on && ! merged )) && command -v gh >/dev/null; then
               for o in ${(f)"$(cd "$repo" && perl -e 'alarm shift; exec @ARGV' 10 gh pr list --head "$br" --state merged --json headRefOid --jq '.[].headRefOid' </dev/null 2>/dev/null)"}; do
                 # Same branch name isn't enough: the merged PR's head must be this commit or come after it.
                 [[ $o == $sha ]] || { git -C "$wt" cat-file -e "$o^{commit}" 2>/dev/null && git -C "$wt" merge-base --is-ancestor "$sha" "$o" 2>/dev/null; } && { merged=2; break; }
               done
             fi
             unpushed=0
-            (( on || merged )) || unpushed=$(git -C "$wt" rev-list --count "$sha" --not --remotes 2>/dev/null)
+            (( on || merged )) || unpushed=$(git -C "$wt" rev-list --count "$sha" --not --remotes 2>/dev/null || print '?')
             (( merged == 2 )) && mtext='yes (squash)' || { (( merged )) && mtext=yes || mtext=no; }
-            wt_rows+=("$size"$'\t'"$(gb $size) GB  $(tilde "$wt")  [${br:-detached}, $dirty dirty, $unpushed unpushed, on origin: $( (( on )) && print yes || print no), merged: $mtext, local-only files: $lo$how]$flag")
+            wt_rows+=("$size"$'\t'"$(gb $size) GB  $(tilde "$wt")  [${br:-detached}, $dirty dirty, $unpushed unpushed, on origin: $( (( ! online )) && print unknown || { (( on )) && print yes || print no; }), merged: $( (( online )) && print $mtext || print unknown), local-only files: $lo$how]$flag")
             if [[ -n $lock ]]; then
               print -r -- "locked worktree"$'\t'"$size"$'\t'"$(tilde "$wt")" >> "$held"
-            elif [[ -z $flag ]] && (( dirty == 0 && lo == 0 )) && (( on || merged )); then
+            elif [[ -z $flag && $dirty == 0 && $lo == 0 ]] && (( on || merged )); then
               sift "$wt" "$wt"
               if (( $#reply )); then
                 GITROW[$wt]=1
@@ -352,7 +401,11 @@ typeset -A PROJ TOPOF
 if (( ${#ROOTS} )); then
   for m in ${(f)"$(find $ROOTS -maxdepth 6 \( $PRUNE -o -name Pods -o -name .dart_tool -o -name .build \) -prune -o -type f \( -name package.json -o -name Cargo.toml -o -name pyproject.toml -o -name requirements.txt -o -name setup.py -o -name Pipfile -o -name build.gradle -o -name build.gradle.kts -o -name settings.gradle -o -name Podfile -o -name pubspec.yaml -o -name composer.json -o -name Package.swift \) -print 2>/dev/null)"}; do
     d=${m:h}
-    [[ -n ${TOPOF[$d]} ]] || TOPOF[$d]=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || print -r -- "$d")
+    if [[ -z ${TOPOF[$d]} ]]; then
+      TOPOF[$d]=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || print -r -- "$d")
+      # Inside another repo's ignored folder with nothing tracked: no git covers it.
+      [[ ${TOPOF[$d]} != $d && -z $(git -C "$d" ls-files 2>/dev/null | head -1) ]] && TOPOF[$d]=$d
+    fi
     top=${TOPOF[$d]}
     [[ -n ${GITROW[$top]} ]] && continue   # the whole worktree is already a row
     for rel in ${=DISP[${m:t}]}; do
@@ -405,8 +458,11 @@ fi
 vdir=$HOME/.local/share/claude/versions
 vs=("$vdir"/*(N))
 if (( $#vs > 1 )); then
-  newest=$(print -l -- ${vs:t} | sort -V | tail -1)
-  old=(); for v in $vs; do [[ ${v:t} != $newest ]] && old+=("$v"); done
+  # Keep the newest and whatever a claude on PATH or in ~/.local/bin points at (a pinned version).
+  keep=($(print -l -- ${vs:t} | sort -V | tail -1))
+  for b in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null)"; do [[ -e $b && ${b:A} == $vdir/* ]] && keep+=("${${b:A}#$vdir/}"); done
+  keep=(${keep%%/*})
+  old=(); for v in $vs; do (( ${keep[(Ie)${v:t}]} )) || old+=("$v"); done
   sift "" $old; (( $#reply )) && cand none Q 1 "$(n_of $#reply 'old claude CLI version')" rm - $reply
 fi
 for base in "$HOME"/.vscode/extensions "$HOME"/.cursor/extensions "$HOME"/.windsurf/extensions; do
@@ -426,8 +482,6 @@ except Exception: pass' "$base/extensions.json" 2>/dev/null)"})
 done
 upd=("$HOME"/Library/Caches/*([Ss]hip[Ii]t|updater)*(N/))
 sift "" $upd; (( $#reply )) && cand none Q 1 "updater leftovers (${(j:, :)${reply:t}[1,3]})" rm - $reply
-inbox=(/Library/Developer/CoreSimulator/Images/Inbox/*(N))
-sift "" $inbox; (( $#reply )) && cand none R 0 "stray simulator image in CoreSimulator Inbox" "sudo rm -rf ${(j: :)${(q)reply}}" - $reply
 
 # Caches refill on their own. Browser profiles (Cookies, Local State, *-profile, User Data)
 # hold logins and are not caches, wherever they sit.
@@ -443,6 +497,8 @@ for c in "$HOME"/Library/Caches/*(N/); do
     continue
   fi
   is_profile "$c" && { profiles+=("$c"); continue; }
+  # JetBrains keeps Local History (your edit history) under Caches.
+  [[ -n $(find "$c" -maxdepth 3 -name LocalHistory -print -quit 2>/dev/null) ]] && { profiles+=("$c"); continue; }
   sift "" "$c"; (( $#reply )) && cand regrows Q 1 "$(tilde "$c")" rm - "$c"
 done
 for c in "$HOME"/.npm/_cacache "$HOME"/.cache/uv "$HOME"/.cache/pip "$HOME"/.gradle/caches "$HOME"/.cargo/registry/cache; do
@@ -457,7 +513,7 @@ for s in "$HOME"/Library/pnpm/store "$HOME"/.local/share/pnpm/store; do
 done
 dd_idle=() dd_recent=()
 for d in "$HOME"/Library/Developer/Xcode/DerivedData/*(N/); do
-  [[ -n $(find "$d" -maxdepth 0 -mtime +$IDLE 2>/dev/null) ]] && dd_idle+=("$d") || dd_recent+=("$d")
+  [[ -z $(find "$d" -type f -mtime -$IDLE -print -quit 2>/dev/null) ]] && dd_idle+=("$d") || dd_recent+=("$d")
 done
 sift "" $dd_idle;   (( $#reply )) && cand rebuild Q 1 "Xcode DerivedData, $(n_of $#reply project) untouched $IDLE+ d" rm - $reply
 sift "" $dd_recent; (( $#reply )) && cand rebuild Q 0 "Xcode DerivedData, $(n_of $#reply 'recent project')" rm - $reply
@@ -497,7 +553,7 @@ for v in "$HOME/Library/Application Support/Claude/vm_bundles" "$HOME/Library/Co
   bytes "$v"; b=$REPLY; (( b >= 50000000 )) && print -r -- "$(gb $b) GB  $(tilde "$v")"
 done
 (( $#profiles )) && { pl=(); for x in $profiles; do pl+=("$(tilde "$x")"); done
-  print -r -- "browser profiles in Caches (logins live here; only Cache, Code Cache, GPUCache, GrShaderCache inside a closed profile may go): ${(j:, :)pl}"; }
+  print -r -- "not caches, though they sit in Caches (browser logins, editor local history): ${(j:, :)pl}"; }
 
 # ---------------------------------------------------------------------------
 h "DRAINS"
@@ -517,18 +573,18 @@ print -r -- "(archive: is it really extracted? dmg/pkg: is the app installed? a 
 
 # ---------------------------------------------------------------------------
 h "HELD BACK"
-sort -t$'\t' -k2,2nr "$held" | awk -F'\t' -v min=$MIN '$2 >= min { printf "%6.1f GB  %s  [%s]\n", $2 / 1e9, $3, $1 }' | head -15
+sort -t$'\t' -k2,2nr "$held" | awk -F'\t' -v min=$MIN '$2 >= min { printf "%6.1f GB  %s  [%s]\n", $2 / 1e9, $3, $1 }' | head -30
 for t in $LOCKED_TREES; do print -r -- "lock held: $(tilde "$t")/$LOCK_DIR"; done
 print -r -- "dev processes:"
 ps -axo pid,command 2>/dev/null \
-  | grep -iE "jest|vitest|next dev|next-server|node --watch|webpack|vite|rollup|esbuild|tsc |npm (run|exec)|pnpm |yarn |gradle|xcodebuild|expo start|metro|docker|simctl|tsx|mongod|postgres|redis-server" \
+  | grep -E "(^|[ /])(jest|vitest|next-server|webpack|vite|rollup|esbuild|tsc|tsx|gradle|gradlew|xcodebuild|metro|docker|simctl|mongod|postgres|redis-server)( |$)|next dev|node --watch|(npm|pnpm|yarn) (run )?(dev|build|test|start)( |$)|expo start" \
   | grep -v grep | cut -c1-140 | sed 's/^/  /' | head -12
 
 if [[ -f $snap ]]; then
   unk=$(python3 -I "$report" unreadable "$snap" 2>/dev/null)
   if [[ -n $unk ]]; then
     h "UNKNOWN (unreadable, size not counted)"
-    print -r -- "$unk" | head -6
+    print -r -- "$unk" | head -6 | while IFS=$'\t' read -r n u; do print -r -- "~/$u: $n unreadable (this folder or one inside it)"; done
     [[ $(uname) == Darwin ]] && print -r -- "(Full Disk Access for the terminal makes these readable)"
   fi
 fi

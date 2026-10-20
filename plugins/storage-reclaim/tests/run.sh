@@ -74,17 +74,60 @@ ln -s "$fake/real-dev" "$fake/Dev"
 E=$fake/.vscode/extensions; mb "$E/pub.ext-1.0.0/a" 1; mb "$E/pub.ext-2.0.0/a" 1
 echo '[{"identifier":{"id":"pub.ext"},"relativeLocation":"pub.ext-1.0.0"}]' > "$E/extensions.json"
 
+# From the PR #7 review (each one reached rec before the fix):
+# a worktree whose ignored .data/ holds a local database,
+printf '.data/\n' >> "$D/repo/.git/info/exclude"
+g -C "$D/repo" worktree add -q "$D/repo-wt/dataw" -b dataw && g -C "$D/repo" push -q origin dataw
+mkdir -p "$D/repo-wt/dataw/.data/hub/d1"; echo 'UNIQUE LOCAL DB' > "$D/repo-wt/dataw/.data/hub/d1/db.sqlite"
+# a worktree whose git status fails, and one whose origin is gone,
+g -C "$D/repo" worktree add -q "$D/repo-wt/brokenw" -b brokenw && g -C "$D/repo" push -q origin brokenw
+echo 'gitdir: /nonexistent' > "$D/repo-wt/brokenw/.git"
+g init -q --bare "$fake/remotes/gone.git"
+node_project "$D/repo2"; g -C "$D/repo2" remote add origin "$fake/remotes/gone.git"; g -C "$D/repo2" push -q origin main
+g -C "$D/repo2" worktree add -q "$D/repo2-wt/feat" -b feat && g -C "$D/repo2" push -q origin feat
+rm -rf "$fake/remotes/gone.git"
+# a non-git project inside another repo's ignored folder, its dist/ the only copy,
+mkdir -p "$D/work"; echo 'scratch/' > "$D/work/.gitignore"; g -C "$D/work" init -q; g -C "$D/work" add .; g -C "$D/work" commit -qm i
+mkdir -p "$D/work/scratch/release/dist"; echo '{}' > "$D/work/scratch/release/package.json"; echo 'only copy' > "$D/work/scratch/release/dist/app-v1.js"
+# a .venv holding an editable git checkout with an uncommitted edit,
+mkdir -p "$D/pyproj"; echo x > "$D/pyproj/requirements.txt"; echo '.venv/' > "$D/pyproj/.gitignore"; g -C "$D/pyproj" init -q; g -C "$D/pyproj" add .; g -C "$D/pyproj" commit -qm i
+mkdir -p "$D/pyproj/.venv/src/mylib"; echo v1 > "$D/pyproj/.venv/src/mylib/lib.py"
+g -C "$D/pyproj/.venv/src/mylib" init -q; g -C "$D/pyproj/.venv/src/mylib" add .; g -C "$D/pyproj/.venv/src/mylib" commit -qm i; echo edit >> "$D/pyproj/.venv/src/mylib/lib.py"
+# dev servers started from a parent folder: with a path argument, from a git monorepo root,
+# and from a plain folder with no path arguments (not seen: the delete-time re-check covers it),
+node_project "$D/ws/app1"; echo 'import time' > "$D/ws/app1/server.py"
+mkdir -p "$D/mono/apps/web"; echo '{}' > "$D/mono/package.json"; echo '{}' > "$D/mono/apps/web/package.json"; echo 'node_modules/' > "$D/mono/.gitignore"
+g -C "$D/mono" init -q && g -C "$D/mono" add . && g -C "$D/mono" commit -qm i; mb "$D/mono/apps/web/node_modules/x" 1
+mkdir -p "$D/loose/a"; echo '{}' > "$D/loose/a/package.json"; mb "$D/loose/a/node_modules/x" 1
+# never-touch entries with a trailing slash and through a symlinked root,
+node_project "$D/ntslash"
+mkdir -p "$fake/real-dev/code/tool2/.venv/lib"; echo x > "$fake/real-dev/code/tool2/requirements.txt"; mb "$fake/real-dev/code/tool2/.venv/lib/big" 1
+# editor local history under Caches, a pinned older claude, and a DerivedData folder built today,
+mb "$C/JetBrains/IntelliJIdea2025.1/LocalHistory/changes.storageData" 1
+V=$fake/.local/share/claude/versions; mb "$V/1.0.0" 1; mb "$V/2.0.0" 1; mb "$V/3.0.0" 1
+mkdir -p "$fake/.local/bin"; ln -s "$V/1.0.0" "$fake/.local/bin/claude"
+mb "$fake/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/x" 1
+# and an idle project whose two build folders share hardlinks (one row, counted once).
+node_project "$D/linked"; mkdir -p "$D/linked/.next"; mb "$D/linked/node_modules/big" 150; ln "$D/linked/node_modules/big" "$D/linked/.next/big"
+
 # Everything old enough to count as idle.
 find "$fake" -exec touch -h -t "$stamp" {} + 2>/dev/null
+echo fresh > "$fake/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/x"
+touch -t "$stamp" "$fake/Library/Developer/Xcode/DerivedData/App-abc"
 
 conf=$fake/.config/storage-reclaim; mkdir -p "$conf"
 printf '~/Library/Caches/keepme\tthe user said keep\n' > "$conf/never-touch.txt"
 printf '~/Library/Caches/C#tool\tliteral name\n~/Library/Caches/appx/*.db\ta file inside a cache\n' >> "$conf/never-touch.txt"
+printf '~/Documents/ntslash/\ttrailing slash\n~/Dev/code/tool2\tthrough a symlink\n~/Library/Caches/C#t*\tglob with #\n~/Library/Caches/bar (o*\tglob with ( )\n' >> "$conf/never-touch.txt"
 printf 'date\tpath\tdecision\trecheck\tnote\n2026-01-01\t~/Library/Caches/kept-by-decision\tkeep\t2999-01-01\ttest\n2026-01-01\t~/Library/Caches/bar (old)\tkeep\tnever\ttest\n' > "$conf/decisions.tsv"
 
 # A process sitting in busy-app's root with nothing open under node_modules: the gap lsof alone misses.
 (cd "$D/busy-app" && exec sleep 300) & pids+=($!); disown $!
 (cd "$fake/Dev/code/tool" && exec sleep 300) & pids+=($!); disown $!
+(cd "$D/ws" && exec -a python3 perl -e 'sleep 300' app1/server.py) & pids+=($!); disown $!
+(cd "$D/mono" && exec -a npm perl -e 'sleep 300' -- --workspaces run dev) & pids+=($!); disown $!
+(cd "$D/loose" && exec -a npm perl -e 'sleep 300' -- --workspaces run dev) & pids+=($!); disown $!
+(exec -a WiFiCloudAssetsXPCService sleep 300) & pids+=($!); disown $!
 
 # A simulator runtime no device uses, through a stand-in xcrun.
 mkdir -p "$fake/bin"
@@ -101,7 +144,7 @@ mkdir -p "$fake/cwd"; echo junk > "$fake/cwd/zzz-file"   # a first run must not 
 snapshot() { (cd "$fake" && find . -path ./.config -prune -o -path ./.local -prune -o -print | LC_ALL=C sort && find . -path ./.config -prune -o -path ./.local -prune -o -type f -exec cksum {} + | LC_ALL=C sort); }
 before=$(snapshot)
 
-run() { env -u XDG_CONFIG_HOME HOME="$fake" PATH="$fake/bin:$PATH" STORAGE_RECLAIM_MIN_MB=0 STORAGE_RECLAIM_ROWS=50 \
+run() { env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$fake" PATH="$fake/bin:$PATH" STORAGE_RECLAIM_MIN_MB=0 STORAGE_RECLAIM_ROWS=50 \
   STORAGE_RECLAIM_PROJECT_ROOTS="$fake/Documents:$fake/Dev/code" \
   STORAGE_RECLAIM_LOCK_DIR=.locks STORAGE_RECLAIM_WORKTREE_SUFFIX=-worktrees zsh "$scan" "$@" 2>&1; }
 out=$(cd "$fake/cwd" && run); status=$?
@@ -159,6 +202,27 @@ check "the MCP login profile is never in an action" $s
 [ -z "$(id_of 'code/tool')" ] && s=ok || s=bad; check "a running project under a symlinked root is not idle" $s
 case "$out" in *"rm -rf $E/pub.ext-2.0.0"*) s=ok;; *) s=bad;; esac; check "the extension version not in use is proposed" $s
 case "$out" in *"$E/pub.ext-1.0.0"*) s=bad;; *) s=ok;; esac; check "the active (older) extension version is kept" $s
+[ -z "$(id_of 'repo-wt/dataw')" ] && s=ok || s=bad; check "worktree with an ignored .data/ database is not proposed" $s
+case "$out" in *"repo-wt/dataw  [dataw, 0 dirty"*"local-only files: 1]"*) s=ok;; *) s=bad;; esac; check ".data/ counts as a local-only file" $s
+[ -z "$(id_of 'repo-wt/brokenw')" ] && s=ok || s=bad; check "worktree whose git status fails is not proposed" $s
+check "a failed git status reads as unknown" "$(has 'brokenw, ? dirty')"
+[ -z "$(id_of 'repo2-wt/feat')" ] && s=ok || s=bad; check "worktree whose origin is gone is not proposed" $s
+check "origin gone reads as unknown" "$(has 'on origin: unknown')"
+[ -z "$(id_of 'scratch/release')" ] && s=ok || s=bad; check "dist/ in a non-git folder inside an ignored path is not proposed" $s
+[ -z "$(id_of 'pyproj')" ] && s=ok || s=bad; check "a .venv holding a git checkout is not proposed" $s
+check "the git checkout hold is named" "$(has 'pyproj/.venv  [holds a git checkout]')"
+[ -z "$(id_of 'ws/app1')" ] && s=ok || s=bad; check "app started from the parent folder with a path argument is in use" $s
+[ -z "$(id_of 'mono')" ] && s=ok || s=bad; check "monorepo app with a workspace process at the git root is in use" $s
+[ -n "$(id_of 'loose/a')" ] && s=ok || s=bad; check "known miss: no path arguments from a plain parent folder (re-checked at delete time)" $s
+[ -z "$(id_of 'ntslash')" ] && s=ok || s=bad; check "never-touch entry with a trailing slash holds" $s
+[ -z "$(id_of 'code/tool2')" ] && s=ok || s=bad; check "never-touch entry through a symlinked root holds" $s
+[ -n "$(id_of 'Caches/dropme')" ] && s=ok || s=bad; check "two absolute globs don't hold everything" $s
+[ -z "$(id_of 'JetBrains')" ] && s=ok || s=bad; check "a Caches folder with LocalHistory is not proposed" $s
+case "$out" in *"versions/1.0.0"*) s=bad;; *) s=ok;; esac; check "the pinned claude version is kept" $s
+case "$out" in *"rm -rf $V/2.0.0"*) s=ok;; *) s=bad;; esac; check "an unpinned older claude version is proposed" $s
+dd=$(id_of 'DerivedData'); case " $rec " in *" $dd "*) s=bad;; *) s=ok;; esac; check "DerivedData built today is not in rec" $s
+row 'linked:' | grep -q ' 0\.2 ' && s=ok || s=bad; check "hardlinks shared by a row's folders count once" $s
+case "$(printf '%s\n' "$out" | sed -n '/^dev processes:/,/^$/p')" in *WiFiCloudAssets*) s=bad;; *) s=ok;; esac; check "dev-process list skips names that only contain tsx" $s
 check "prints the survey-only footer" "$(has 'nothing deleted')"
 [ "$before" = "$after" ] && s=ok || s=bad; check "fake HOME unchanged outside the keep-lists (nothing deleted)" $s
 

@@ -20,25 +20,23 @@ A table first, so you can act in a minute and stop:
 ```
 QUICK WINS · 38.2 GB free
 ID      GB  back      what
-Q1     8.4  download  iOS 18.3 simulator runtime (no simulator uses it)
-Q2     6.1  rebuild   ~/code/app: node_modules, .next (idle, last commit 40 d)
-Q3     3.2  regrows   ~/Library/Caches/Homebrew
-Q4     1.4  git       worktree ~/code/app-wt/fix-login (merged, clean)
-R1     1.1  none      stray simulator image in CoreSimulator Inbox
+Q1     6.1  rebuild   ~/code/app: node_modules, .next (idle, last commit 40 d)
+Q2     3.2  regrows   ~/Library/Caches/Homebrew
+Q3     1.4  git       worktree ~/code/app-wt/fix-login (merged, clean)
+Q4     0.6  none      2 old claude CLI versions
 back: none = junk · regrows = on its own · rebuild = install/build · download = on next use · git = from origin
-R = deleting needs your password
-rec = Q1 Q2 Q3 Q4 · 38.2 → ~57.3 GB free
+rec = Q1 Q2 Q3 Q4 · 38.2 → ~49.5 GB free
 held: 3 in use · 1 never-touch
 ```
 
 Reply `rec`, or the IDs you want. The agent deletes those, then shows free space before and after. Details follow the table for anyone who wants them: worktrees, projects, what grew since the last run, the system side, and files that may be the only copy.
 
 What keeps it safe:
-- **In use.** Anything a process has open, names on its command line, or runs inside (a `vite` started from the project root counts for that project's `node_modules`) is held back.
+- **In use.** Anything a process has open or runs inside is held back, and so is a project a command line names (`python app1/server.py` from the parent folder).
 - **Other sessions.** Locked worktrees, lock folders and session worktree folders are never proposed.
 - **Idle means idle.** A project's installs only go when it has had no commit, edit or Claude Code or Codex session for 7 days.
-- **Worktrees.** Proposed only when clean, on origin or merged (squash merges too, with `gh`), and their `.env` and other local-only files match the main checkout.
-- **Content.** Archives, installers and anything git tracks never get an ID. They're listed for a manual look.
+- **Worktrees.** Proposed only when clean, on origin or merged (squash merges too, with `gh`), and their `.env`, local databases and other ignored files match the main checkout. `git worktree remove` is never forced.
+- **Content.** Archives, installers, anything git tracks, generic `build`/`dist` folders outside git, and folders holding a git checkout never get an ID.
 - **Your call.** Nothing is deleted without your reply. Keep-lists in `~/.config/storage-reclaim/` remember what you said to keep.
 
 disk-map, bundled, is the read-only part: a treemap page and a text summary for any folder or drive, on macOS, Linux or Windows, plus a diff of what grew between two scans. Ask "what's taking space on my external drive".
