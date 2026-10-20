@@ -42,7 +42,7 @@
     {
       "name": "storage-reclaim",
       "source": "./plugins/storage-reclaim",
-      "description": "Disk cleanup for macOS that measures first, refuses to touch what a process or another session uses, and frees space in tiers you approve one by one.",
+      "description": "Disk cleanup for macOS that leads with a ranked table of quick wins, skips anything a process or another agent session is using, and deletes only what you approve. Bundles disk-map.",
       "category": "machine"
     },
     {

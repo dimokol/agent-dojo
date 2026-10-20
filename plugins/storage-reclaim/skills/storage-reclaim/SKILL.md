@@ -1,89 +1,97 @@
 ---
 name: storage-reclaim
-description: Free disk space on macOS without deleting anything in use or the only copy of something. Use when "free up space", "clean up my disk", "disk is full", "what's eating my disk", "reclaim space", or a build or install fails for lack of space.
+description: Free disk space on macOS without deleting anything a process or another agent session is using, or the only copy of something. Leads with a ranked table of quick wins and a one-word "rec" option. Use when "free up space", "clean up my disk", "disk is full", "what's eating my disk", "reclaim space", a build or install fails for lack of space, or the disk turns red. Also good as a monthly sweep.
 ---
 
 # storage-reclaim
 
-Needs zsh and is tested on macOS only. On Linux the scan is untested and skips the macOS-only sections.
+A cleanup goes wrong in two ways. It deletes something in use, like a `node_modules` under a running test suite, or a worktree another session is working in. Or it deletes the only copy of something: an archive that looks extracted but never was, or a "duplicate" repo that is a fork with unpushed commits. The scan checks for both before it proposes anything.
 
-A cleanup goes wrong in two ways. It deletes something a running process or another session is using, such as a `node_modules` under a live test run. Or it deletes the only copy of something, such as an archive that looks like a duplicate of an extracted folder but was never extracted. Checking before deleting takes seconds. Work through the phases in order.
+Needs zsh, `lsof` and python3; tested on macOS. `dua` (`brew install dua-cli`, 2.43 or newer) makes it faster and adds the what-grew diff. disk-map, next to this skill, draws the map.
 
 ## Config
 
-A value that still reads as a literal `${...}` or is blank means unset; use the default.
+A value that still reads as a literal `${...}` or is blank means unset.
 
-- `lock_dir`: plugin option `${user_config.lock_dir}`, else `lock_dir:` in the `## storage-reclaim config` block of the project's CLAUDE.md, else empty (skip the check). A folder name your sessions use to mark active work.
-- `worktree_suffix`: plugin option `${user_config.worktree_suffix}`, else `worktree_suffix:` in the same block, else empty (skip the check). The ending of folders that hold other sessions' worktrees.
+| Option | Plugin option | Env var for scan.sh | Default |
+|---|---|---|---|
+| `project_roots` | `${user_config.project_roots}` | `STORAGE_RECLAIM_PROJECT_ROOTS` | whichever of ~/Documents, ~/Projects, ~/code, ~/Developer, ~/src exist |
+| `idle_days` | `${user_config.idle_days}` | `STORAGE_RECLAIM_IDLE_DAYS` | 7 |
+| `lock_dir` | `${user_config.lock_dir}` | `STORAGE_RECLAIM_LOCK_DIR` | empty, skip |
+| `worktree_suffix` | `${user_config.worktree_suffix}` | `STORAGE_RECLAIM_WORKTREE_SUFFIX` | empty, skip |
 
-## Phase 1: Measure
+Without the plugin, read the same keys from a `## storage-reclaim config` block in CLAUDE.md. Pass set values to scan.sh as env vars on the same command line. `project_roots` is colon-separated.
 
-Run `scripts/scan.sh` from this skill's folder with zsh. It is read-only. If `lock_dir` or `worktree_suffix` is set, pass them as the environment variables `STORAGE_RECLAIM_LOCK_DIR` and `STORAGE_RECLAIM_WORKTREE_SUFFIX` on the same command line.
+Keep-lists live in `~/.config/storage-reclaim/` (copied from the templates here on the first run, so plugin updates don't wipe them):
+- `never-touch.txt`: paths no cleanup proposes. When the user says "keep X", add a line.
+- `decisions.tsv`: what the user decided on past runs. `keep` and `user handles` hold an item until its recheck date. Append today's decisions at the end of every run.
 
-It prints free space, swap, the biggest home directories, known high-yield candidates with sizes, and what makes deletion unsafe right now. Read it before proposing anything. Look for the few items worth 5 GB or more, not a list of 50 MB items. The space is usually in superseded tool versions, SDK and simulator runtimes, VM images, dependency folders and browser caches.
-
-- Free space on macOS is measured on the Data volume (`df -h /System/Volumes/Data`). `/` is a read-only snapshot and always looks fine.
-- A large `/System/Volumes/VM` is swap. Closing apps returns it. Say so instead of hunting for files.
-
-## Phase 2: Safety gate
-
-Before proposing any delete, check what is using each candidate:
+## 1. Scan
 
 ```bash
-ps -eo pid,command | grep -iE "jest|vitest|next dev|node --watch|webpack|vite|tsc|npm|pnpm|yarn|gradle|xcodebuild" | grep -v grep
-lsof +D <path> 2>/dev/null | head
+zsh <this skill's folder>/scripts/scan.sh
 ```
 
-`lsof +D` is slow on huge trees. Run it on the paths you are about to propose.
+It's read-only and takes about a minute. It writes only its snapshots (`~/.local/state/storage-reclaim/`) and the keep-lists on the first run. Never run `dua flamegraph`: it opens the user's browser and can't write to a file.
 
-- A dependency folder or build cache with a live process attached is off limits until that process ends. This includes processes you did not start.
-- Other sessions count as running processes. Anything under a lock entry, a worktree folder or a dev server the scan listed is untouchable.
-- If a sweep could affect a shared project tree, name the paths in your report before acting so another session can object.
+If the user needs room for something specific, ask how much first. When the top rows cover it, stop there.
 
-## Phase 3: Verify items that may hold content
+## 2. Show the table
 
-Caches and old tool versions can be rebuilt. Anything that might hold content gets one check first.
+Show the QUICK WINS block exactly as printed, from its first line through the `held:` line, and nothing else from the scan unless asked. It looks like this:
 
-| Looks like | Check before deleting |
-| --- | --- |
-| An archive next to a folder of the same name | Compare the archive listing (`unzip -l`) with the folder. Transfer links expire, so an unextracted archive may be the last copy. |
-| A `.dmg` or `.pkg` | Is the app installed in `/Applications`? |
-| Anything in Downloads, Documents or Desktop | This is the user's content. It goes in the ask-first tier at any size. |
-| A VM image or container volume | Does it hold state (a database, a configured environment) or is it a rebuildable base image? |
+```
+QUICK WINS · 38.2 GB free
+ID      GB  back      what
+Q1     8.4  download  iOS 18.3 simulator runtime (no simulator uses it)
+Q2     6.1  rebuild   ~/code/app: node_modules, .next (idle, last commit 40 d)
+Q3     3.2  regrows   ~/Library/Caches/Homebrew
+R1     1.1  none      stray simulator image in CoreSimulator Inbox
+back: none = junk · regrows = on its own · rebuild = install/build · download = on next use · git = from origin
+R = deleting needs your password
+rec = Q1 Q2 Q3 · 38.2 → ~55.9 GB free
+held: 3 in use · 1 never-touch
+```
 
-When a check is ambiguous, keep the file and say why.
+The user replies `rec`, a list of IDs, or asks for more. The details below the table (worktrees, projects, what grew, system side, needs a look, held back) are for you. Use them to answer questions.
 
-## Phase 4: Propose in tiers
+What the scan already decided, so you don't redo it:
+- **In use**: a process has a file open under the path, names it on its command line, or runs in a folder above it inside the same project. Those, never-touch paths, kept decisions, lock-file trees and locked worktrees never reach the table.
+- **Idle project**: no commit, no file edit and no Claude Code or Codex session there for `idle_days`, and nothing running in it. Idle projects lose their installs and build output; active ones only build output that regrows.
+- **Only what git ignores**: a tracked `dist/` or `build/` is content and never listed.
+- **Worktree rows (git)**: clean, not in use or locked, on origin or merged (a squash merge counts when `gh` finds the merged PR), and every local-only file (`.env` and the like) is identical to the main checkout's copy.
+- **rec**: every Q row except rebuild rows of active projects and worktrees with a recent session. Never R rows.
 
-Show a table of candidates with real sizes, largest first, split into two tiers. Delete nothing before the user answers, however obvious it looks.
+## 3. Delete
 
-Safe tier (rebuildable, no content, nothing in use):
-- Superseded versions of auto-updating tools. Editors and CLIs often keep every version they downloaded. Keep the running one.
-- Browser and updater caches.
-- Build output: `.next`, `dist`, `build`, `target`, `.turbo`, DerivedData.
-- Package manager caches: `~/.npm/_cacache`, `~/Library/Caches/pip`, Homebrew's cache.
+Only what the user approved. Re-check each path right before deleting: `lsof +D <path>` on small folders; for big trees, `lsof -a -d cwd` plus a `grep` of `ps -axo command` for the path. Anything that turned in-use since the scan is skipped and named.
 
-Ask-first tier (recoverable but expensive, or user content):
-- `node_modules` in projects not being worked on, when nothing is running.
-- SDKs, simulator runtimes and devices, emulator images. Often the biggest win, and always a multi-GB re-download.
-- VM bundles for local sandbox or agent features.
-- Anything under Downloads, Documents or Desktop.
+- Run the command from the ACTIONS section at the end of the scan for each ID. Print each path with the size it freed.
+- R rows: give the user the exact `sudo` command to paste into Terminal.app. The `!` prefix can't answer a password prompt.
+- `rm -rf` can stop partway through a tree without write permission. Run `chmod -R u+w` and finish, or report the folder as still there.
+- Measure free space with `df` before and after, and print it next to the scan's estimate. Clones, hardlinks and growing swap make the two differ. Say by how much.
 
-Never touch: git repositories and history, `.env` files and credentials, another session's worktree, anything a lock claims, the only copy of anything.
+Close with what the user needs to know: projects that need an install or a build before they run, what downloads again on first use, and what you kept and why. Record today's decisions in `decisions.tsv`.
 
-## Phase 5: Execute and verify
+## Content checks (needs a look)
 
-Delete only the items the user approved. Print each path with the size it freed.
+Items that may hold the only copy of something never get a Q ID. They're listed under NEEDS A LOOK. One check each before proposing them:
 
-- `rm -rf` can fail halfway on a subdirectory without the write bit and leave a half-deleted folder. Re-check anything reported as failed, run `chmod -R u+w` on it, finish the delete or report it as still present.
-- Measure free space before and after with `df -h /System/Volumes/Data`, not by summing what you deleted. Report the real difference.
+| Looks like | Check |
+|---|---|
+| An archive next to a folder of the same name | Compare `unzip -l` with the folder. Transfer links expire. |
+| A `.dmg` or `.pkg` | Is the app in /Applications? |
+| A second copy of a repo or toolchain | `git status`, and `git log --branches --not --remotes` for unpushed commits |
+| Anything in Downloads, Documents or Desktop | The user's content: ask, whatever the size |
+| A VM image or container volume | Does it hold state, or is it a rebuildable base image? |
 
-Close with the consequences:
-- Which projects need a dependency install before they run.
-- Which tools re-download on first use, and roughly how much.
-- What you kept on purpose, and why.
-- If swap inflated the numbers, that closing apps recovers that space too.
+When a check is ambiguous, keep the item and say why.
 
-## Finding the big items
+## Traps the scan flags
 
-Ask "what is duplicated, and what regenerates?" instead of "what looks big?". VM bundles and simulator runtimes rarely show up in a glance at the projects folder, which is where people look first.
+- **Simulator runtimes an Xcode update dropped from the asset catalogue** (`/System/Library/AssetsV2/*/…xml`). Deleting one with `simctl` or Xcode unlists it, but its `.asset` folder stays and System Integrity Protection blocks `sudo rm`. Only Recovery mode frees it. Say so before deleting such a runtime.
+- **Browser profiles in `~/Library/Caches`** (Playwright MCP profiles and the like) hold logins. Only `Cache`, `Code Cache`, `GPUCache` and `GrShaderCache` inside a closed profile may go.
+- **pnpm stores** are hardlinked into projects: `pnpm store prune`, never `rm`.
+- **`~/.cache`** mixes caches with app data. Judge each subfolder.
+- **Swap** shares the disk and returns when apps close.
+- **Privacy**: the map's `.html` and `.stacks` files list every folder name in the home folder. Don't attach them anywhere.

@@ -1,27 +1,65 @@
 # storage-reclaim
 
-Disk cleanup that measures where the space went, refuses to touch anything a running process or another session uses, checks that "obvious junk" really is junk, and frees space in tiers you approve one by one.
+Frees disk space on a Mac without deleting what a dev server, a test run or another agent session is using. Built for running several Claude Code or Codex sessions with worktrees, where a folder that looks idle often isn't.
 
 ## Install
+
 ```
 claude plugin marketplace add dimokol/agent-workbench
 claude plugin install storage-reclaim@dimokol
 ```
 
-Without the plugin system: copy `skills/storage-reclaim/` into `~/.claude/skills/` and put the options below in a `## storage-reclaim config` block in CLAUDE.md. You can also run `scripts/scan.sh` yourself with `STORAGE_RECLAIM_LOCK_DIR` and `STORAGE_RECLAIM_WORKTREE_SUFFIX` set.
+Then ask your agent to "free up space". For a better scan, `brew install dua-cli` first.
 
-Ask for "free up space" or "what's eating my disk". `scripts/scan.sh` is read-only; every deletion needs your yes.
+Codex or without the plugin system: `npx skills add dimokol/agent-workbench` (every skill in the repo), or copy both folders under `skills/` into your skills folder; scan.sh expects disk-map next to it.
+
+## What you get
+
+A table first, so you can act in a minute and stop:
+
+```
+QUICK WINS · 38.2 GB free
+ID      GB  back      what
+Q1     8.4  download  iOS 18.3 simulator runtime (no simulator uses it)
+Q2     6.1  rebuild   ~/code/app: node_modules, .next (idle, last commit 40 d)
+Q3     3.2  regrows   ~/Library/Caches/Homebrew
+Q4     1.4  git       worktree ~/code/app-wt/fix-login (merged, clean)
+R1     1.1  none      stray simulator image in CoreSimulator Inbox
+back: none = junk · regrows = on its own · rebuild = install/build · download = on next use · git = from origin
+R = deleting needs your password
+rec = Q1 Q2 Q3 Q4 · 38.2 → ~57.3 GB free
+held: 3 in use · 1 never-touch
+```
+
+Reply `rec`, or the IDs you want. The agent deletes those, then shows free space before and after. Details follow the table for anyone who wants them: worktrees, projects, what grew since the last run, the system side, and files that may be the only copy.
+
+What keeps it safe:
+- **In use.** Anything a process has open, names on its command line, or runs inside (a `vite` started from the project root counts for that project's `node_modules`) is held back.
+- **Other sessions.** Locked worktrees, lock folders and session worktree folders are never proposed.
+- **Idle means idle.** A project's installs only go when it has had no commit, edit or Claude Code or Codex session for 7 days.
+- **Worktrees.** Proposed only when clean, on origin or merged (squash merges too, with `gh`), and their `.env` and other local-only files match the main checkout.
+- **Content.** Archives, installers and anything git tracks never get an ID. They're listed for a manual look.
+- **Your call.** Nothing is deleted without your reply. Keep-lists in `~/.config/storage-reclaim/` remember what you said to keep.
+
+disk-map, bundled, is the read-only part: a treemap page and a text summary for any folder or drive, on macOS, Linux or Windows, plus a diff of what grew between two scans. Ask "what's taking space on my external drive".
+
+The map files (`~/.local/state/storage-reclaim/*.html`, `*.stacks`) list every folder name in your home folder. Don't share them.
 
 ## Config
+
 | Option | Default | What it does |
 | --- | --- | --- |
-| `lock_dir` | empty | Folder name that marks active work. Its contents are listed as in use. |
-| `worktree_suffix` | empty | Folders ending in this are reported as other sessions' worktrees. |
+| `project_roots` | ~/Documents, ~/Projects, ~/code, ~/Developer, ~/src (those that exist) | Colon-separated folders that hold your repos |
+| `idle_days` | 7 | Days without a commit, edit or agent session before a project counts as idle |
+| `lock_dir` | empty | Folder name your sessions use to mark active work. A project holding a lock is left alone. |
+| `worktree_suffix` | empty | Folders ending in this hold other sessions' worktrees and are left alone |
 
-The skill reads the plugin option, then the CLAUDE.md block, then the default. Only `scripts/scan.sh` reads the `STORAGE_RECLAIM_*` variables, which the skill sets for it.
+Set them with `/plugin configure storage-reclaim@dimokol`. Without the plugin system, put them in a `## storage-reclaim config` block in CLAUDE.md, or set `STORAGE_RECLAIM_PROJECT_ROOTS` and the like when you run `scripts/scan.sh` yourself.
 
 ## Turn it off
+
 `claude plugin disable storage-reclaim@dimokol`
 
 ## Requirements
-zsh. Tested on macOS only; on Linux the scan is untested. Test: `bash tests/run.sh`.
+
+macOS, zsh, `lsof`, python3. `dua` 2.43 or newer for the map and the what-grew diff; without it sizes come from `du`, which is slower. `gh` is optional, for squash-merged worktrees. Tests: `bash tests/run.sh` (macOS) and `bash tests/disk-map.sh` (macOS and Linux).
