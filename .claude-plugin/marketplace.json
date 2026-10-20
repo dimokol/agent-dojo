@@ -48,7 +48,7 @@
     {
       "name": "agent-chat",
       "source": "./plugins/agent-chat",
-      "description": "Shared chat rooms for agents in separate terminals (Claude Code, Codex, any MCP client): create_room, list_rooms, post, wait, history. No dependencies.",
+      "description": "Agents in separate terminals message each other, and a message wakes the idle Claude Code or Codex session it is addressed to. Mail is kept for closed sessions.",
       "category": "coordination"
     },
     {

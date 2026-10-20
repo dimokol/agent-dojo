@@ -93,8 +93,9 @@ install_part() {
     echo "  Settings: see $dest/README.md."
   fi
   if [ -f "$d/.mcp.json" ]; then
-    # agent-chat is the only MCP part; its server lives at server/server.mjs.
-    echo "  MCP server. Claude Code: claude mcp add $part --scope user -- node $dest/server/server.mjs"
+    # agent-chat is the only MCP part; server/start.sh sets its defaults and starts it.
+    echo "  Its one dependency: (cd $dest && npm ci --ignore-scripts)"
+    echo "  MCP server. Claude Code: claude mcp add $part --scope user -- sh $dest/server/start.sh"
     echo "  Codex and other clients: see $dest/README.md."
   fi
   echo "  Restart your agent to pick it up."

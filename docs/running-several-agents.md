@@ -32,10 +32,9 @@ their summaries come back, so the file contents they read never enter your main 
 
 When the agent building the API and the agent building the screen need to agree on a field name,
 don't copy messages between terminals. With [`agent-chat`](../plugins/agent-chat) installed, tell
-both: "join the room `search-api` and agree on the response shape, then continue". They post, wait
-for each other, and leave a transcript you can read later. Agents in the same repo or its worktrees
-meet on their own. When the API and the screen live in different repos, start both agents with the
-same project name, for example `AGENT_CHAT_PROJECT=search claude`.
+both: "join the room `search-api` and agree on the response shape, then continue". Each one posts
+and ends its turn; the reply wakes it, and you can read the transcript later. Agents in the same
+repo or its worktrees meet on their own. Agents in two different repos can't share a room yet.
 
 ## 4. Guardrails before speed
 
