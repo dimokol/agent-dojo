@@ -107,6 +107,10 @@ export function adoptClosedName(state,session,name,now,records) {
   if(!owner||owner.participant_id===id||owner.retired_at!==undefined||state.participants[id])return
   const old=state.participants[owner.participant_id]
   if(old.name!==name)return
+  // Mail in a damaged log can't be moved, so the name isn't taken over until it is repaired.
+  const logs={}
+  for(const room of Object.keys(state.rooms))try{logs[room]=records(room)}catch{return}
+  records=room=>logs[room]
   const entries=Object.entries(state.rooms).flatMap(([room,rs])=>Object.values(rs.members).filter(m=>m.participant_id===old.id).map(member=>({room,rs,member})))
   if(entries.some(({member})=>member.joined))return
   for(const [room,rs] of Object.entries(state.rooms))if(!entries.some(entry=>entry.room===room)) {

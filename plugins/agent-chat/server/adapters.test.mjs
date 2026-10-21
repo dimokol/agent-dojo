@@ -7,6 +7,9 @@ import net from 'node:net'
 import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { createAdapters, validateSession, runProcess } from './adapters.mjs'
+// These tests cover the version gate, which the plugin ships switched off; turn it on here so a
+// plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
+process.env.AGENT_CHAT_VERSION_CHECK = 'on'
 
 const ID = '12345678-1234-1234-1234-123456789012'
 const OTHER = '12345678-1234-1234-1234-123456789013'

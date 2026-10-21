@@ -1,6 +1,8 @@
 import { wakes, readState } from './message-policy.mjs'
 // A post causes one bounded delivery attempt. There is no idle timer or model loop.
-export function createController({ store, adapters, dispatchTimeoutMs = 20_000 }) {
+// cancelGraceMs: how long a cancelled delivery gets to finish the step it's in. A Codex presence
+// check can't be cancelled and takes up to 3 s, so the grace covers it.
+export function createController({ store, adapters, dispatchTimeoutMs = 20_000, cancelGraceMs = 5_000 }) {
   return {
     async dispatch(room) {
       const results = []
@@ -34,10 +36,16 @@ export function createController({ store, adapters, dispatchTimeoutMs = 20_000 }
         let outcome, timer
         const cancellation = new AbortController()
         try {
-          outcome = await Promise.race([adapters.deliver({ session: member.session,
+          const delivery = adapters.deliver({ session: member.session,
             messages: pending.filter(message => ids.includes(message.id)), ...fyi, room, project: store.project,
-            agent: member.agent, projectRoot: store.projectRoot, signal:cancellation.signal }),
-          new Promise(resolve => { timer = setTimeout(() => { cancellation.abort(); resolve({ status: 'pending', detail: 'Delivery deadline reached; outcome uncertain, inbox retained.' }) }, dispatchTimeoutMs) })])
+            agent: member.agent, projectRoot: store.projectRoot, signal:cancellation.signal })
+          outcome = await Promise.race([delivery, new Promise(resolve => { timer = setTimeout(() => { cancellation.abort(); resolve(null) }, dispatchTimeoutMs) })])
+          // Cancelled at the deadline, an adapter that sent nothing yet answers at once. Recording
+          // that as notified would hold the member silent for the whole ring-claim window.
+          if (outcome === null) {
+            const settled = await Promise.race([delivery, new Promise(resolve => { timer = setTimeout(resolve, cancelGraceMs, null) })])
+            outcome = settled?.attempted === false ? settled : { status: 'pending', detail: 'Delivery deadline reached; outcome uncertain, inbox retained.' }
+          }
         } catch { outcome = { status: 'pending', detail: 'Delivery outcome uncertain; inbox retained.' } }
         finally { clearTimeout(timer) }
         // Uncertain writes are not retried automatically. A receiver can still fetch and ack.

@@ -4,6 +4,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isVerifiedVersion, recordVerifiedVersion } from './claude-versions.mjs'
+// These tests cover the version gate, which the plugin ships switched off; turn it on here so a
+// plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
+process.env.AGENT_CHAT_VERSION_CHECK = 'on'
 
 const proof = { passed: true, ready: true, pong: true, receipt: 'received', explicitAckCalls: 0, requestedModelTurns: 2, probe: 'agent-chat-inbox-v1' }
 const unavailable = error => error.code === 'CHAT_CLAUDE_VERSIONS_UNAVAILABLE' &&

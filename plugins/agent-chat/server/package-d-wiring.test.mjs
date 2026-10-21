@@ -26,7 +26,7 @@ function fixture(t) {
   const claude = { id: LAUNCH, conversationId: CONV, runtime: 'claude', profileHome: profile }
   return { dir, stateRoot, root, profile, store, claude, closers }
 }
-const unreadFile = (stateRoot, id) => path.join(noticeDirectory(stateRoot), `${id}.unread`)
+const unreadFile = (f, id) => path.join(noticeDirectory(f.stateRoot), `${id}.${projectNoticeId(f.root, f.dir)}.unread`)
 const accepted = { deliver: async () => ({ status: 'accepted' }) }
 function nativeService(f, extra = {}) {
   const self = processIdentity(process.pid)
@@ -42,11 +42,11 @@ test('store writes keep the session notice, gates and canonical name cache curre
   f.store.join({ room: 'setup', agent: 'Bob', session: { id: 'Bob', runtime: 'manual' } })
   assert.deepEqual(readNameRecord(f.stateRoot, ann), { schema: 1, name: 'Ann', source: 'agent' })
   const sent = f.store.post({ room: 'setup', from: 'Bob', to: 'Ann', message: 'hi' })
-  assert.deepEqual(JSON.parse(fs.readFileSync(unreadFile(f.stateRoot, ann), 'utf8')).rooms, [{ room: 'setup', count: 1 }])
-  for (const id of [LAUNCH, CONV]) assert.ok(fs.existsSync(sessionGateFile(f.stateRoot, id)), id)
+  assert.deepEqual(JSON.parse(fs.readFileSync(unreadFile(f, ann), 'utf8')).rooms, [{ room: 'setup', count: 1 }])
+  for (const id of [LAUNCH, CONV]) assert.ok(fs.existsSync(sessionGateFile(f.stateRoot, id, projectNoticeId(f.root, f.dir))), id)
   f.store.updateDelivery({ room: 'setup', agent: 'Ann', sessionId: LAUNCH, message_ids: [sent.message_id], status: 'delivered' })
-  assert.equal(fs.existsSync(unreadFile(f.stateRoot, ann)), false)
-  assert.equal(fs.existsSync(sessionGateFile(f.stateRoot, CONV)), false)
+  assert.equal(fs.existsSync(unreadFile(f, ann)), false)
+  assert.equal(fs.existsSync(sessionGateFile(f.stateRoot, CONV, projectNoticeId(f.root, f.dir))), false)
   f.store.renameSession({ room: 'setup', agent: 'Ann', sessionId: LAUNCH, name: 'Annie', source: 'explicit' })
   assert.deepEqual(readNameRecord(f.stateRoot, ann), { schema: 1, name: 'Annie', source: 'explicit' })
 })

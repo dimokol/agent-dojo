@@ -6,7 +6,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createStore } from './store.mjs'
-import { createService } from './server.mjs'
+import { createService, FAILED } from './server.mjs'
 
 const receipt = (store, agent) => store.pending({ room: 'room', agent, sessionId: agent })[0].delivery
 
@@ -311,5 +311,5 @@ test('stdio errors never echo damaged room JSON snippets or filesystem paths',as
   assert.doesNotMatch(output.stdout+output.stderr,/TEST_ONLY_DO_NOT_ECHO|SyntaxError|\/Users\/|\/private\//)
   const result=JSON.parse(output.stdout.trim())
   assert.equal(result.result.isError,true)
-  assert.equal(result.result.content[0].text,'Chat operation failed; durable data retained')
+  assert.equal(result.result.content[0].text,FAILED)
 })

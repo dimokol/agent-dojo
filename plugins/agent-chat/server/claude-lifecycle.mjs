@@ -89,6 +89,19 @@ export function claudeLifecycleAncestors(ppid = process.ppid, { psTimeoutMs, lso
   }
   return result
 }
+// A hook killed while holding the lock leaves it behind. Holding it takes milliseconds, so one
+// older than any hook can run is stale and is taken over once.
+const STALE_LOCK_MS = 60_000
+function takeLock(lock) {
+  try { return fs.openSync(lock, 'wx', 0o600) }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    const stat = fs.lstatSync(lock)
+    if (!stat.isFile() || stat.uid !== process.getuid() || Date.now() - stat.mtimeMs < STALE_LOCK_MS) throw error
+    fs.unlinkSync(lock)
+    return fs.openSync(lock, 'wx', 0o600)
+  }
+}
 function registry(stateRoot, session, projectRoot, create) {
   canonicalDirectory(stateRoot, true, create)
   const directory = path.join(stateRoot, 'lifecycle')
@@ -127,7 +140,7 @@ export function pruneClaudeLifecycle({ stateRoot = DEFAULT_STATE, signal = proce
     const seen = live.get(record.clientPid)
     if (seen?.start === record.clientStart || (!seen && !gone(record.clientPid))) continue
     let lockFd
-    try { lockFd = fs.openSync(`${file}.lock`, 'wx', 0o600) } catch { continue }
+    try { lockFd = takeLock(`${file}.lock`) } catch { continue }
     try {
       const current = readRecord(file)
       if (current?.clientPid === record.clientPid && current.clientStart === record.clientStart) { fs.unlinkSync(file); removed++ }
@@ -155,7 +168,7 @@ export function observeClaudeLifecycle(input, env = process.env, {
     stage = 'project'
     const canonicalProject = canonicalDirectory(projectRoot)
     if (scope(input.cwd) !== canonicalProject) throw unavailable()
-    // A symlinked profile (~/.claude -> ~/.claude-dimo) is checked at its real
+    // A symlinked profile (~/.claude -> ~/.claude-work) is checked at its real
     // path, the same canonical path the MCP server records.
     stage = 'profile'
     const profileHome = canonicalDirectory(fs.realpathSync(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')))
@@ -175,7 +188,7 @@ export function observeClaudeLifecycle(input, env = process.env, {
     // Nonblocking lock. An overlapping hook fails closed instead of waiting on
     // the store's long SQLite mutex or guessing at a stale lock owner.
     const lock = `${file}.lock`
-    const lockFd = fs.openSync(lock, 'wx', 0o600)
+    const lockFd = takeLock(lock)
     let temporary
     try {
       const previous = readRecord(file)

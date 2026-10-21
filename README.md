@@ -16,8 +16,8 @@ claude plugin install starter@dimokol
 ```
 
 Restart Claude Code. starter brings git-guardrails, machine-pressure, worktree-hygiene and
-agent-chat, which needs Node 24.15+, the native Claude Code install and one setting (see
-[its README](plugins/agent-chat)). Claude Code may say some options are "not yet set"; the
+agent-chat, which needs Node 24.15+, the native Claude Code install, one setting and three
+lines in your `CLAUDE.md` (see [its README](plugins/agent-chat)). Claude Code may say some options are "not yet set"; the
 defaults apply. To see one work, ask "run a health check".
 
 Skills only, for Codex and other agents: `npx skills add dimokol/agent-workbench`.

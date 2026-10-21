@@ -14,7 +14,7 @@ import { createController } from './controller.mjs'
 import { isProcessLive } from './native-session.mjs'
 import { scheduleVerification, verificationStatus } from './claude-auto-verify.mjs'
 import { isVerifiedVersion, installedClaudeVersion } from './claude-versions.mjs'
-import { ensureDirectory, safeFile, atomicJson } from './store-files.mjs'
+import { ensureDirectory, safeFile, atomicJson, unsafeFolderLine } from './store-files.mjs'
 import { projectNoticeId, dailyOrphanLine, sessionUnreadLine } from './notices.mjs'
 import { claudeProfileHome, UUID, pruneHousekeeping, readShown, recordShown } from './notice-files.mjs'
 
@@ -27,9 +27,14 @@ const currentVersion=()=>installedClaudeVersion()
 const failedStep={input:'the start-up details were incomplete',project:'the project check (git) failed or timed out',
   profile:'the Claude profile folder failed its safety check',process:'the process check (ps, lsof) failed or timed out',
   socket:"this tab's messaging socket failed its safety check",record:'the registration file could not be written',restore:'restoring its rooms failed'}
-export function registrationFailureLine(stage) {
+export function registrationFailureLine(stage,source) {
   if(stage==='install')return 'Agent-chat needs the native Claude Code install (~/.local/bin/claude); this one can\'t be registered or woken. Claude startup continues; existing permissions are unchanged.'
-  return `Agent-chat could not register this tab: ${failedStep[stage]??'an unexpected error'}. Rooms joined before this start need join_room again; their mail is kept. Claude startup continues; existing permissions are unchanged.`
+  // After /clear the tab's record still names the earlier conversation, so its rooms keep ringing
+  // here until the tab restarts. A fork (--fork-session) is a new process with no earlier record.
+  const rooms=source==='clear'
+    ?'Until this tab restarts, agent-chat still treats it as the conversation before /clear, and that conversation\'s rooms keep ringing here.'
+    :'Rooms joined before this start need join_room again; their mail is kept.'
+  return `Agent-chat could not register this tab: ${failedStep[stage]??'an unexpected error'}. ${rooms} Claude startup continues; existing permissions are unchanged.`
 }
 function shownToday(name,now=Date.now()) {
   const last=Date.parse(readShown(stateRoot,name)?.trim())
@@ -40,7 +45,7 @@ function shownToday(name,now=Date.now()) {
 function recordFailure(stage,source) {
   try {
     const directory=path.join(stateRoot,'lifecycle-failures');ensureDirectory(directory)
-    atomicJson(path.join(directory,'latest.json'),{message:registrationFailureLine(stage),stage:failedStep[stage]||stage==='install'?stage:'unexpected',source:source??null,at:new Date().toISOString()})
+    atomicJson(path.join(directory,'latest.json'),{message:registrationFailureLine(stage,source),stage:failedStep[stage]||stage==='install'?stage:'unexpected',source:source??null,at:new Date().toISOString()})
   }catch{}
 }
 // "Checking" is true only before or during the one attempt; a failed attempt
@@ -94,6 +99,15 @@ function orphanNotice(projectRoot) {
 function unreadNotice(input) {
   try {return [sessionUnreadLine({stateRoot,profileHome:claudeProfileHome(),conversationId:input?.session_id})].filter(Boolean)}catch{return []}
 }
+// A chat folder others can read stops the MCP server, and /mcp only says it failed. Say why at
+// start, where the user sees it. A missing folder is fine: the first room creates it.
+export function unsafeChatRootLine(root=chatRoot) {
+  try {
+    const stat=fs.lstatSync(root)
+    if(stat.isDirectory()&&!stat.isSymbolicLink()&&stat.uid===process.getuid()&&!(stat.mode&0o077))return []
+  } catch {return []}
+  return [unsafeFolderLine(root)]
+}
 // One retry after a short pause: a burst of tabs starting together is the
 // usual cause, and the second attempt then passes. No retry once the hook has
 // run for retryBeforeMs, so startup stays well inside Claude's hook timeout.
@@ -114,6 +128,7 @@ async function main(messages) {
   let input=null,invalid=null
   try {input=JSON.parse(text)}catch(error){invalid=error}
   messages.push(...unseenFailureFlags(stateRoot,sessionKey(input)).map(flag=>flag.message))
+  if(!prompt)messages.push(...unsafeChatRootLine())
   if(prompt){
     messages.push(...unreadNotice(input))
     process.stdout.write(JSON.stringify(context(messages)));return
@@ -122,11 +137,15 @@ async function main(messages) {
   if(invalid)throw Object.assign(invalid,{stage:'input'})
   const plan=sessionStartPlan(input)
   if(!plan.restore){process.stdout.write(JSON.stringify(context(messages)));return}
+  // Every failure from here on carries the start's source, so the line can say what happens to
+  // the rooms of a cleared conversation.
+  const withSource=error=>{throw Object.assign(error,{source:plan.source})}
   const projectRoot=await registerWithRetry(()=>{
     try {return lifecycleProjectRoot(input.cwd)}catch(error){throw Object.assign(error,{stage:error.stage??'project'})}
-  })
+  }).catch(withSource)
   if(plan.orphans)messages.push(...orphanNotice(projectRoot))
   const observation=await registerWithRetry(()=>observeClaudeLifecycle({...input,source:plan.source},process.env,{stateRoot,projectRoot,scope:()=>projectRoot}))
+    .catch(withSource)
   if(!observation)return
   const directory=path.join(stateRoot,'hook-tasks');ensureDirectory(directory)
   const file=path.join(directory,randomUUID()+'.json')
@@ -141,9 +160,9 @@ if(process.argv[1]&&path.resolve(process.argv[1])===SCRIPT) {
   const messages=[]
   try {await main(messages)}
   catch(error) {
-    recordFailure(error?.stage,null)
+    recordFailure(error?.stage,error?.source??null)
     // An unsupported install fails the same way at every start, so it is named once a day.
     const quiet=error?.stage==='install'&&shownToday('unsupported-install')
-    process.stdout.write(JSON.stringify(context([...messages,...(quiet?[]:[registrationFailureLine(error?.stage)])])))
+    process.stdout.write(JSON.stringify(context([...messages,...(quiet?[]:[registrationFailureLine(error?.stage,error?.source)])])))
   }
 }

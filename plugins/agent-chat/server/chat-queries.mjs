@@ -4,7 +4,7 @@ import { isBroadcast, readState } from './message-policy.mjs'
 import { recipientStates } from './read-index.mjs'
 
 const seenStatuses = new Set(['delivered', 'acked', 'received', 'handled'])
-const statusRank = ['joined', 'closed', 'left', 'never_joined']
+const statusRank = ['joined', 'not_in_room', 'closed', 'left', 'never_joined']
 const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || String(a.participant_id).localeCompare(String(b.participant_id))
 const rowsOf = rs => [...Object.values(rs?.members ?? {}), ...Object.values(rs?.retired_members ?? {})]
 
@@ -27,12 +27,13 @@ function memberStatus(member) {
   if (member.left_reason === 'explicit') return 'left'
   return member.left_reason ? 'closed' : 'never_joined'
 }
-function roomStatus(rs, participantId) {
+function roomStatus(rs, participantId, joinedElsewhere = new Set()) {
   if (!participantId) return 'never_joined'
   const member = Object.values(rs.members).find(row => row.participant_id === participantId)
-  if (member) return memberStatus(member)
   // Retired rows belong to a closed owner whose name was explicitly taken over.
-  return Object.values(rs.retired_members ?? {}).some(row => row.participant_id === participantId) ? 'closed' : 'never_joined'
+  const status = member ? memberStatus(member) : Object.values(rs.retired_members ?? {}).some(row => row.participant_id === participantId) ? 'closed' : 'never_joined'
+  // A session joined in another room is live: its mail here waits until it joins this room.
+  return status === 'never_joined' && joinedElsewhere.has(participantId) ? 'not_in_room' : status
 }
 const canonicalName = (state, member) => state.participants?.[member.participant_id]?.name ?? member.agent
 const senderId = (state, message) => message.from_id ?? state.nameOwners?.[String(message.from).toLowerCase()]?.participant_id ?? null
@@ -78,6 +79,7 @@ export function members(state, room, now, isLive, records, isClosed = () => fals
 export function unreadReport(state, now, records) {
   const groups = new Map(), unknown = new Map(), damaged_rooms = []
   let orphanCount = 0, orphanOldest = null
+  const joinedElsewhere = new Set(Object.values(state.rooms).flatMap(rs => Object.values(rs.members).filter(row => row.joined).map(row => row.participant_id)))
   for (const [room, rs] of Object.entries(state.rooms)) {
     let messages
     try { messages = records(room) } catch { damaged_rooms.push(room); continue }
@@ -93,11 +95,11 @@ export function unreadReport(state, now, records) {
         if (!['unread', 'delivered'].includes(row.read_state)) continue
         const key = row.participant_id ?? `to:${row.agent.toLowerCase()}`
         const group = groups.get(key) ?? { name: row.agent, participant_id: row.participant_id ?? null, rooms: new Map() }
-        const status = roomStatus(rs, row.participant_id)
+        const status = roomStatus(rs, row.participant_id, joinedElsewhere)
         const entry = group.rooms.get(room) ?? { room, status, unread: 0, delivered: 0, at: null }
         entry[row.read_state]++; entry.at = older(entry.at, at)
         group.rooms.set(room, entry); groups.set(key, group)
-        if (row.read_state === 'unread' && status !== 'joined' && !isBroadcast(message.to)) { orphanCount++; orphanOldest = older(orphanOldest, at) }
+        if (row.read_state === 'unread' && !['joined', 'not_in_room'].includes(status) && !isBroadcast(message.to)) { orphanCount++; orphanOldest = older(orphanOldest, at) }
       }
     }
   }

@@ -163,7 +163,7 @@ test('an in-CLI /resume resolves for the MCP server even though hooks now see th
   assert.equal(resolveClaudeConversation(mcp, f.resolveOptions), RESUMED)
 })
 
-// ~/.claude is a symlink to ~/.claude-dimo here, so a plain `claude` start
+// ~/.claude is a symlink to ~/.claude-work here, so a plain `claude` start
 // never registered while the MCP server accepted the same profile.
 test('a symlinked profile registers at its real path, the same one the MCP server records', t => {
   const f = fixture(t)

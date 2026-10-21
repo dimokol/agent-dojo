@@ -3,16 +3,22 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { projectStateKey } from './store-files.mjs'
 import { sessionUnread, unreadReport, formatAge } from './chat-queries.mjs'
 import { distribution } from './distribution.mjs'
 import { UUID, NAME, claudeParticipantId, nameFiles, privateDirectory, readPrivate, writeIfChanged, removeIfPresent, readNativeRecord, readShown, recordShown } from './notice-files.mjs'
 
 export const noticeDirectory = stateRoot => path.join(stateRoot, 'notices')
 // The store's private project directory key; the hook can compute it without the lock.
-export const projectNoticeId = (root, projectRoot) =>
-  createHash('sha256').update(path.resolve(root) + '\n' + fs.realpathSync(projectRoot)).digest('hex').slice(0, 24)
-export const sessionGateFile = (stateRoot, sessionId) => path.join(noticeDirectory(stateRoot), `session-${sessionId}.gate`)
-const unreadFile = (stateRoot, participantId) => path.join(noticeDirectory(stateRoot), `${participantId}.unread`)
+export const projectNoticeId = (root, projectRoot) => projectStateKey(root, projectRoot)
+// Per project as well: one conversation can be joined in two projects, and each project's sync
+// would otherwise delete the other's files. Names from before carry no project and are dropped
+// by the next sync; readers accept both.
+const checkedProject = projectId => { if (!NAME.test(projectId)) throw Error('invalid project notice id'); return projectId }
+export const sessionGateFile = (stateRoot, sessionId, projectId) => path.join(noticeDirectory(stateRoot), `session-${sessionId}.${checkedProject(projectId)}.gate`)
+const unreadFile = (stateRoot, participantId, projectId) => path.join(noticeDirectory(stateRoot), `${participantId}.${checkedProject(projectId)}.unread`)
+const legacyGateFile = (stateRoot, sessionId) => path.join(noticeDirectory(stateRoot), `session-${sessionId}.gate`)
+const legacyUnreadFile = (stateRoot, participantId) => path.join(noticeDirectory(stateRoot), `${participantId}.unread`)
 const orphanFile = (stateRoot, projectId) => {
   if (!NAME.test(projectId)) throw Error('invalid project notice id')
   return path.join(noticeDirectory(stateRoot), `project-${projectId}.orphans`)
@@ -47,8 +53,14 @@ export function syncNotices({ stateRoot, projectId, state, now, records }) {
     const existing = new Set(fs.readdirSync(directory))
     const put = (file, text) => { if (writeIfChanged(file, text)) written++ }
     const drop = file => { if (existing.has(path.basename(file)) && removeIfPresent(file)) removed++ }
-    for (const id of notices.knownParticipants) notices.participants.has(id) ? put(unreadFile(stateRoot, id), notices.participants.get(id)) : drop(unreadFile(stateRoot, id))
-    for (const id of notices.knownGates) notices.gates.has(id) ? put(sessionGateFile(stateRoot, id), '') : drop(sessionGateFile(stateRoot, id))
+    for (const id of notices.knownParticipants) {
+      notices.participants.has(id) ? put(unreadFile(stateRoot, id, projectId), notices.participants.get(id)) : drop(unreadFile(stateRoot, id, projectId))
+      drop(legacyUnreadFile(stateRoot, id))
+    }
+    for (const id of notices.knownGates) {
+      notices.gates.has(id) ? put(sessionGateFile(stateRoot, id, projectId), '') : drop(sessionGateFile(stateRoot, id, projectId))
+      drop(legacyGateFile(stateRoot, id))
+    }
     notices.orphans ? put(orphanFile(stateRoot, projectId), notices.orphans) : drop(orphanFile(stateRoot, projectId))
     return { written, removed }
   } catch (error) { return { written, removed, error: error.message === 'unsafe notice directory' ? error.message : 'notice update failed' } }
@@ -81,9 +93,19 @@ function parse(file) {
 }
 export function sessionUnreadLine({ stateRoot, profileHome, conversationId }) {
   if (!UUID.test(conversationId ?? '') || typeof profileHome !== 'string') return null
-  const value = parse(unreadFile(stateRoot, claudeParticipantId(profileHome, conversationId)))
-  const rooms = value?.schema === 1 && Array.isArray(value.rooms) ? value.rooms : []
-  if (!rooms.length || rooms.length > 64 || !rooms.every(row => NAME.test(row?.room) && Number.isSafeInteger(row.count) && row.count > 0)) return null
+  const participant = claudeParticipantId(profileHome, conversationId)
+  let names
+  try { names = fs.readdirSync(noticeDirectory(stateRoot)).filter(name => name.startsWith(participant + '.') && name.endsWith('.unread')) } catch { return null }
+  // Every project this conversation has unread in; the same room name in two projects adds up.
+  const counts = new Map()
+  for (const name of names.slice(0, 16)) {
+    const value = parse(path.join(noticeDirectory(stateRoot), name))
+    const rows = value?.schema === 1 && Array.isArray(value.rooms) ? value.rooms : []
+    if (rows.length > 64 || !rows.every(row => NAME.test(row?.room) && Number.isSafeInteger(row.count) && row.count > 0)) return null
+    for (const row of rows) counts.set(row.room, (counts.get(row.room) ?? 0) + row.count)
+  }
+  const rooms = [...counts].map(([room, count]) => ({ room, count })).sort((a, b) => a.room.localeCompare(b.room))
+  if (!rooms.length || rooms.length > 64) return null
   const total = rooms.reduce((sum, row) => sum + row.count, 0)
   return `agent-chat: ${total} unread in ${rooms.length === 1 ? rooms[0].room : rooms.map(row => `${row.room} (${row.count})`).join(', ')}`
 }
@@ -92,7 +114,7 @@ export function projectOrphanLine({ stateRoot, projectId, now = Date.now() }) {
   try { value = parse(orphanFile(stateRoot, projectId)) } catch { return null }
   const at = Date.parse(value?.oldest_at)
   if (value?.schema !== 1 || !Number.isSafeInteger(value.count) || value.count < 1 || !Number.isFinite(at)) return null
-  return `agent-chat: ${value.count} unread message${value.count === 1 ? '' : 's'} to closed sessions, oldest ${formatAge(now - at)}; run ${distribution.unreadCommand} to review`
+  return `agent-chat: ${value.count} unread message${value.count === 1 ? '' : 's'} to closed sessions, oldest ${formatAge(now - at)}; to review, run ${distribution.unreadCommand} or ask the agent to call agent-chat's unread tool`
 }
 // Orphan mail can sit for weeks, so startup names it at most once a day per
 // project; /unread still lists everything. A marker in the future is ignored.

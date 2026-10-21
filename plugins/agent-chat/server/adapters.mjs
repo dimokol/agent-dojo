@@ -219,7 +219,9 @@ export function createAdapters({ executor = runProcess, connect = net.createConn
     }
     return !session.serverPid || isProcessLive({ pid: session.serverPid, start: session.serverStart })
   }
-  return { validateSession, alive, async deliver(input) {
+  // What a Codex profile's app-server says about a thread, for checks outside delivery.
+  const inspect = session => control.inspect ? control.inspect(session) : Promise.resolve(null)
+  return { validateSession, alive, inspect, async deliver(input) {
     if (input.signal?.aborted) return {attempted:false,status:'pending',detail:'Delivery cancelled before send; inbox retained.'}
     let session, batch
     try { session = validateSession(input.session); batch = envelope(input, session.id) }
@@ -263,8 +265,14 @@ export function createAdapters({ executor = runProcess, connect = net.createConn
       if (version && version.code !== 0) return { attempted: false, status: 'unsupported', detail: 'Runtime capability check failed.' }
       if (session.runtime === 'claude') {
         const detected = running ?? /^(\d+\.\d+\.\d+) \(Claude Code\)\s*$/.exec(version.stdout ?? '')?.[1]
-        if (!detected || !verifiedClaudeVersion(detected, { stateRoot })) {
-          return { attempted: false, status: 'unsupported', detail: `Claude wake-ups paused: version ${detected || 'unknown'} not verified. The automatic check runs once at the next Claude start; unread mail retained.` }
+        // With the check off every version passes, an unknown one too; with it on, unknown never does.
+        if (!verifiedClaudeVersion(detected, { stateRoot })) {
+          // A failed check is never retried on its own, so don't promise one.
+          let failed = false
+          try { failed = !!detected && JSON.parse(fs.readFileSync(path.join(stateRoot, 'verification', `${detected}.json`), 'utf8')).status === 'failed' } catch {}
+          return { attempted: false, status: 'unsupported', detail: failed
+            ? `Claude wake-ups paused: version ${detected} failed its check; see the verification folder in the agent-chat state folder, then run verify-claude.mjs --run to check again. Unread mail retained.`
+            : `Claude wake-ups paused: version ${detected || 'unknown'} not verified. The automatic check runs once at the next Claude start; unread mail retained.` }
         }
         if (!session.endpoint) return { attempted: false, status: 'unsupported', detail: 'No registered Claude messaging socket.' }
         if (!await live()) return { offline:true, attempted: false, status: 'pending', detail: 'Client closed during capability check; inbox retained.' }

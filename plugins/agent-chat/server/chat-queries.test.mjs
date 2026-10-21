@@ -97,12 +97,13 @@ test('unread report groups unread and delivered mail by recipient with ages and 
     ['Dan', 'left', 1, 1, '7h'],
     ['Ghost', 'never_joined', 1, 0, '2d']])
   const ann = report.recipients[0]
-  assert.deepEqual(ann.rooms.map(r => [r.room, r.status, r.unread, r.delivered]), [['design', 'never_joined', 1, 0], ['setup', 'joined', 1, 1]])
+  // Ann is live in setup, so her mail in design waits for her to join it: not in room, not closed.
+  assert.deepEqual(ann.rooms.map(r => [r.room, r.status, r.unread, r.delivered]), [['design', 'not_in_room', 1, 0], ['setup', 'joined', 1, 1]])
   assert.equal(ann.oldest_at, iso(NOW - 5 * H))
   assert.equal(report.recipients[4].participant_id, null)
   assert.deepEqual(report.unknown_legacy, [{ name: 'Ann', participant_id: id.ann, room: 'setup', count: 1, oldest_at: iso(NOW - 9 * H), oldest_age: '9h' }])
-  // Orphans: unread direct mail whose recipient is not joined in that room.
-  assert.deepEqual(report.orphans, { count: 4, oldest_at: iso(NOW - 50 * H), oldest_age: '2d' })
+  // Orphans: unread direct mail whose recipient is not joined in that room and not live elsewhere.
+  assert.deepEqual(report.orphans, { count: 3, oldest_at: iso(NOW - 50 * H), oldest_age: '2d' })
   assert.deepEqual(report.damaged_rooms, [])
   assert.equal(JSON.stringify(state), before)
   assert.equal(JSON.stringify(report).includes('secret body'), false)

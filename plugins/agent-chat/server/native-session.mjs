@@ -68,9 +68,14 @@ function processCommand(pid) {
 
 // On macOS comm can be shortened to a title. The first txt mapping identifies
 // the executable without reading argv or accepting a caller-chosen process name.
-export function processExecutable(pid, { timeoutMs = 1000 } = {}) {
+// macOS keeps lsof in /usr/sbin, most Linux distributions in /usr/bin.
+const LSOF = ['/usr/sbin/lsof', '/usr/bin/lsof']
+export const lsofBinary = (candidates = LSOF) => candidates.find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true } catch { return false } })
+export function processExecutable(pid, { timeoutMs = 1000, candidates = LSOF } = {}) {
+  const lsof = lsofBinary(candidates)
+  if (!lsof) return null
   try {
-    const output = execFileSync('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'txt', '-F', 'pn'], {
+    const output = execFileSync(lsof, ['-a', '-p', String(pid), '-d', 'txt', '-F', 'pn'], {
       encoding: 'utf8', timeout: timeoutMs, maxBuffer: 32 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
       env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
     })
@@ -94,6 +99,8 @@ export function codexBinary(home = os.homedir(), { resolve = true } = {}) {
 export function runningClaudeVersion(executable) {
   if (typeof executable !== 'string' || path.dirname(executable) !== path.join(os.homedir(), '.local/share/claude/versions')) return undefined
   const version = path.basename(executable)
+  // A prerelease build reads as unknown: session records, verification and the version gate all
+  // take plain x.y.z only, and with the check off an unknown version still wakes.
   return /^\d+\.\d+\.\d+$/.test(version) ? version : undefined
 }
 
@@ -124,15 +131,20 @@ function profile(value) {
   } catch { return null }
 }
 
+// The Codex profile a Codex server belongs to, or null when that folder fails its check.
+export function codexProfileHome(env = process.env) {
+  return profile(env.AGENT_CHAT_CODEX_HOME || env.CODEX_HOME || path.join(os.homedir(), '.codex'))
+}
+
 // This returns private runtime facts. MCP responses must never expose these fields.
-export function inferNativeSession(meta, env = process.env, { pid = process.pid, ppid = process.ppid, getCommand = processCommand, getExecutable = processExecutable, expectedPredicate = trustedClaudeCommand } = {}) {
+export function inferNativeSession(meta, env = process.env, { pid = process.pid, ppid = process.ppid, getCommand = processCommand, getExecutable = processExecutable, expectedPredicate = trustedClaudeCommand, hasLsof = () => !!lsofBinary() } = {}) {
   let turn = meta?.['x-codex-turn-metadata']
   if (turn !== undefined) {
     if (typeof turn === 'string') {
       try { turn = JSON.parse(turn) } catch { return null }
     }
     if (!turn || typeof turn !== 'object' || Array.isArray(turn) || !UUID.test(turn.thread_id ?? '')) return null
-    const profileHome = profile(env.AGENT_CHAT_CODEX_HOME || env.CODEX_HOME || path.join(os.homedir(), '.codex'))
+    const profileHome = codexProfileHome(env)
     const server = processIdentity(pid)
     if (!profileHome || !server) return null
     return { id: turn.thread_id, runtime: 'codex', profileHome, serverPid: server.pid, serverStart: server.start }
@@ -143,12 +155,16 @@ export function inferNativeSession(meta, env = process.env, { pid = process.pid,
   const parent = identities.get(ppid)
   const server = identities.get(pid)
   const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET
-  let isClaudeParent = false, executable
+  let isClaudeParent = false, executable, unknown = false
   try {
     const command = parent && getCommand(ppid)
     executable = command === 'claude' ? getExecutable(ppid) : command
+    // An lsof that failed or timed out under load proves nothing about the install; with no lsof
+    // at all the install can't be checked, so the session counts as not native.
+    unknown = command === 'claude' && executable === null && hasLsof()
     isClaudeParent = !!parent && expectedPredicate(executable) === true
   } catch { return null }
+  if (unknown) throw new Error('Native Claude session check timed out; retry')
   if (!profileHome || !parent || !server || !isClaudeParent || typeof socketPath !== 'string' || !path.isAbsolute(socketPath) || socketPath.includes('\0')) return null
   const claudeVersion = runningClaudeVersion(executable)
   return {

@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import {scheduleVerification,verificationStatus,runVerificationWorker,clearFailure,refreshVerificationAttention} from './claude-auto-verify.mjs'
+// These tests cover the version gate, which the plugin ships switched off; turn it on here so a
+// plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
+process.env.AGENT_CHAT_VERSION_CHECK = 'on'
 const version='2.1.301'
 function fixture(t){const root=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'ac-auto-fixture-'));fs.chmodSync(root,0o700);t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return {version,stateRoot:root,cwd:root,profileHome:root}}
 function scheduled(input,extra={}){let launched=0;const deps={isVerified:()=>false,spawnWorker(){launched++;const child=new EventEmitter();child.unref=()=>{};return child},...extra};const result=scheduleVerification(input,deps);return {result,launched,deps,input:{...input,attempt:JSON.parse(fs.readFileSync(result.flagPath)).attempt}}}

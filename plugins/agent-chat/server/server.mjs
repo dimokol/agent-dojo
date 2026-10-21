@@ -9,19 +9,22 @@ import { randomUUID } from 'node:crypto'
 import { createAdapters, validateSession } from './adapters.mjs'
 import { createController } from './controller.mjs'
 import { tools } from './tools.mjs'
-import { inferNativeSession, processIdentities, processIdentity } from './native-session.mjs'
+import { isBroadcast } from './message-policy.mjs'
+import { inferNativeSession, processIdentities, processIdentity, codexProfileHome, isProcessLive } from './native-session.mjs'
 import { projectRoot } from './project-scope.mjs'
 import { resolveClaudeConversation } from './claude-lifecycle.mjs'
 import { participantId } from './participant-identity.mjs'
 import { claudeFailureFlags } from './claude-failure-flags.mjs'
 import { readNativeLabel } from './notices.mjs'
-import { isVerifiedVersion, sessionClaudeVersion } from './claude-versions.mjs'
+import { isVerifiedVersion, sessionClaudeVersion, versionCheckOff } from './claude-versions.mjs'
 export { projectRoot } from './project-scope.mjs'
 const { createStore, defaultChatRoot } = await import('./store.mjs')
-const { identifier } = await import('./store-files.mjs')
+const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
 
-export function createService({ store, adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation,
-  claudeVerified = session => isVerifiedVersion(sessionClaudeVersion(session), { stateRoot: store.stateRoot }) }) {
+export function createService({ store, adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, isLive=isProcessLive,
+  // With the check off every version passes, so the version is never looked up: for a prerelease
+  // tab that lookup throws, which would show a wakeable tab as not wakeable.
+  claudeVerified = session => versionCheckOff() || isVerifiedVersion(sessionClaudeVersion(session), { stateRoot: store.stateRoot }) }) {
   const controller = createController({ store, adapters })
   const bindings = new Map()
   const cursors = new Map()
@@ -34,9 +37,29 @@ export function createService({ store, adapters = createAdapters(), env = proces
   const publicRows = rows => rows.map(({ sessionId, claim_id, ring_at, ...row }) => row)
   // Inside a Claude session whose parent isn't the native Claude Code install, say so instead
   // of a generic failure: such a session can't be registered or woken.
-  const requireRecognisedClaude = () => {
+  const requireRecognisedNative = meta => {
     if (!nativeSession && env.CLAUDE_CODE_SESSION_ID) throw new Error('Native Claude session not recognised; agent-chat needs the native Claude Code install')
+    // The same for Codex, which sends its turn metadata. Most often the profile folder is the
+    // cause: Codex keeps CODEX_HOME from its servers, so a profile other than ~/.codex isn't found.
+    if (!nativeSession && meta?.['x-codex-turn-metadata'] !== undefined) throw new Error(codexProfileHome(env)
+      ? 'Native Codex session not recognised'
+      : 'Native Codex session not recognised; the Codex profile folder failed its check. A profile other than .codex in your home needs AGENT_CHAT_CODEX_HOME in the mcp_servers.agent_chat.env table of config.toml')
   }
+  // Codex keeps CODEX_HOME from its servers, so with a profile other than ~/.codex and no
+  // AGENT_CHAT_CODEX_HOME the server can pick the wrong profile and every wake would miss.
+  // Only a running app-server that doesn't know this thread proves that: a stopped one is
+  // normal for codex exec, and one that doesn't answer proves nothing.
+  let codexProfileChecked = false
+  const checkCodexProfile = async () => {
+    if (nativeSession?.runtime !== 'codex' || codexProfileChecked || typeof adapters.inspect !== 'function') return
+    let state
+    try { state = await adapters.inspect(nativeSession) } catch { return }
+    codexProfileChecked = true
+    if (state && state.stopped !== true && state.exists === false) throw new Error('Native Codex session not recognised; this thread is not in the Codex profile agent-chat is using. Set AGENT_CHAT_CODEX_HOME in the mcp_servers.agent_chat.env table of config.toml to the profile Codex runs with. An ephemeral codex exec run saves no thread and is refused the same way.')
+  }
+  // A native session's join makes a missing room, as its first post does. The store checks the
+  // name before it makes the room, under its lock, so a refused join leaves no room behind.
+  const joinCreating = (params, title) => store.join({ ...params, create: title })
   // What a model needs to read and answer a message. Participant IDs, the broadcast audience,
   // idempotency keys and receipts stay on disk, and default values are left out: on a short
   // message they were most of the tokens.
@@ -56,6 +79,15 @@ export function createService({ store, adapters = createAdapters(), env = proces
       if (!alive(session.serverPid, session.serverStart) ||
           (session.runtime === 'claude' && !alive(session.clientPid, session.clientStart))) store.deactivateSession(session.id, session)
     }
+  }
+  // The same conversation open in a second tab doesn't take the rooms from a live first tab, as
+  // restoreClaudeMemberships decides at start. Only an explicit join_room takes them over; once
+  // the first tab closes, the second gets them on its next call.
+  // Answers true, false, or 'unknown' when the process check itself failed (ps timed out).
+  const heldElsewhere = member => {
+    if (!member.joined || member.session.runtime !== 'claude' || !nativeSession) return false
+    if (member.session.clientPid === nativeSession.clientPid && member.session.clientStart === nativeSession.clientStart) return false
+    try { return isLive({ pid: member.session.clientPid, start: member.session.clientStart }) } catch { return 'unknown' }
   }
   const observeContext = meta => {
     const session = inferSession(meta, env)
@@ -85,6 +117,8 @@ export function createService({ store, adapters = createAdapters(), env = proces
           (nativeSession.conversationId && (member.session.conversationId??member.session.id)!==nativeSession.conversationId)) continue
       // A recorded version belongs to the process that recorded it.
       const sameProcess=member.session.clientPid===nativeSession.clientPid&&member.session.clientStart===nativeSession.clientStart
+      // Unknown keeps the rooms where they are; the next call checks again.
+      if(heldElsewhere(member))continue
       store.join({ room: member.room, agent: member.agent, session: {...(sameProcess&&member.session.claudeVersion?{claudeVersion:member.session.claudeVersion}:{}),...nativeSession} })
       bindings.set(JSON.stringify([member.room, member.agent]), {sessionId:session.id,participantId:member.participant_id})
     }
@@ -289,11 +323,14 @@ export function createService({ store, adapters = createAdapters(), env = proces
         case 'history': return store.history({ limit: 20, ...args }).map(record => ({ ...messageView(record), cursor: record.cursor }))
         case 'join_room': {
           if (nativeSession && args.session && (args.session.id !== nativeSession.id || args.session.runtime !== nativeSession.runtime)) throw new Error('Register only your own native session')
-          if (!args.session) requireRecognisedClaude()
+          if (!args.session) requireRecognisedNative(meta)
+          if (!nativeSession && !args.session) throw new Error('invalid session; a manual client passes session with id and runtime manual')
           const session = nativeSession ?? validateSession(args.session)
           if (!nativeSession && session.runtime !== 'manual') throw new Error('Native registration requires native MCP context')
           const boundSession = { ...session, serverPid: self.pid, serverStart: self.start, ...(session.runtime === 'manual' ? { connectionId } : {}) }
-          const member = store.join({ ...args, agent: sessionName(session, args.agent), session: boundSession })
+          await checkCodexProfile()
+          const params = { ...args, agent: sessionName(session, args.agent), session: boundSession }
+          const member = nativeSession ? joinCreating(params, args.room) : store.join(params)
           bind(args.room, member, args.agent)
           const delivery = await controller.dispatch(args.room)
           return { room: args.room, agent: member.agent, participant_id:member.participant_id, owner_since:member.owner_since, after_cursor: member.after_cursor, delivery: deliveryView(delivery) }
@@ -312,15 +349,28 @@ export function createService({ store, adapters = createAdapters(), env = proces
           bindings.delete(key(args.room, args.agent)); return result
         }
         case 'post': {
-          if (!bindings.has(key(args.room, args.from))) requireRecognisedClaude()
+          if (!bindings.has(key(args.room, args.from))) requireRecognisedNative(meta)
           if (nativeSession && !bindings.has(key(args.room, args.from))) {
-            if (!store.listRooms().some(room => room.room === args.room)) store.createRoom({ room: args.room, title: args.title || args.room })
-            const member=store.join({ room: args.room, agent: sessionName(nativeSession, args.from), session: nativeSession })
+            await checkCodexProfile()
+            const holds = store.memberships().filter(member => member.room === args.room && participantId(member.session) === participantId(nativeSession)).map(heldElsewhere)
+            if (holds.includes(true)) throw new Error('Native Claude conversation is open in another live tab that holds its rooms; call join_room here to take them over')
+            if (holds.includes('unknown')) throw new Error('Native Claude session check timed out; retry')
+            const member=joinCreating({ room: args.room, agent: sessionName(nativeSession, args.from), session: nativeSession }, args.title || args.room)
             bind(args.room, member, args.from)
           }
           const bound = identity(args.room, args.from)
           const result = store.post({ ...args, from:bound.agent, sessionId: bound.sessionId,participantId:bound.participantId })
-          return { ...result, delivery: deliveryView(await controller.dispatch(args.room)) }
+          // The post is stored by now, so a failed dispatch must not read as a failed post.
+          let delivery
+          try {
+            delivery = deliveryView(await controller.dispatch(args.room))
+            // Direct mail to a name not joined here rings nobody; say so instead of an empty list.
+            const to = args.to ?? 'all'
+            if (!isBroadcast(to) && !delivery.some(row => row.agent?.toLowerCase() === to.toLowerCase()) &&
+                !store.members({ room: args.room }).some(member => member.agent.toLowerCase() === to.toLowerCase()))
+              delivery.push({ agent: to, transport: 'pending', detail: 'Not in this room now (closed, left or never joined); the mail waits until that name is back in it.' })
+          } catch { delivery = [{ agent: null, transport: 'pending', detail: 'Delivery did not run; the post is stored and is routed on the next post or read in this room.' }] }
+          return { ...result, delivery }
         }
         case 'inbox': return store.pending(identity(args.room, args.agent)).map(messageView)
         case 'ack': {
@@ -365,10 +415,17 @@ function packageVersion() {
   }
   return 'unknown'
 }
+// The fallback for an error whose text could carry a path or a record. It can't say whether a
+// post landed, so it says how to find out.
+export const FAILED = 'Agent-chat could not finish this call; details withheld. Mail already stored is kept: check history before posting again, or resend with the same idempotency_key.'
 function main() {
   if (process.env.AGENT_CHAT_DIR || process.env.AGENT_CHAT_PROJECT) throw new Error('Candidate supports inferred projects only; explicit legacy overrides need migration review')
   const root = process.env.AGENT_CHAT_ROOT || defaultChatRoot()
-  const store = createStore({ root, projectRoot: projectRoot(process.cwd()), stateRoot: process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat') })
+  // A git that times out must not bind this tab to the wrong project for its whole life: retry
+  // once, then fail visibly.
+  let scope
+  try { scope = projectRoot(process.cwd(), { strict: true }) } catch { scope = projectRoot(process.cwd(), { strict: true }) }
+  const store = createStore({ root, projectRoot: scope, stateRoot: process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat') })
   const service = createService({ store })
   const send = (id, result, callback) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n', callback)
   const lines = readline.createInterface({ input: process.stdin })
@@ -394,8 +451,10 @@ function main() {
         }
       })
     } catch (error) {
-      const allowed = /^(invalid [A-Za-z0-9 .;:_-]+|recipient is joined; it reads its own mail|message not open for this recipient|Native [A-Za-z0-9 .;:_-]+|join_room on this MCP connection first|session is not joined as this agent|agent alias [A-Za-z0-9 .;:_-]+|room (does not exist|already exists)|MCP connection is closed|unknown (tool|method)|unsafe (directory|file) ownership or permissions)$/
-      const message = error.code === 'CHAT_STATE_DAMAGED' ? 'Agent-chat delivery state is damaged; operator recovery required' : !error.code && allowed.test(error.message) ? error.message : 'Chat operation failed; durable data retained'
+      // Errors the caller can act on pass through. Each added one is a fixed text, so no path,
+      // record or stack can reach the client through them.
+      const allowed = /^([Ii]nvalid [A-Za-z0-9 .;:_-]+|Unsupported runtime|message_ids required|room case variant conflicts with [A-Za-z0-9._-]+|recipient is joined; it reads its own mail|message not (open for this recipient|pending for this session)|message must contain 1 to 200000 characters|title must contain 1 to 200 characters|idempotency key reused with different message|name is owned by another session already joined or reserved|name is reserved for its previous owner|name collision with another owner|Use canonical name or explicitly rename this session|Register only your own native session|Native [A-Za-z0-9 .;:_-]+|join_room on this MCP connection first|session is not joined as this agent|agent alias [A-Za-z0-9 .;:_-]+|room (does not exist|already exists)|MCP connection is closed|unknown (tool|method)|unsafe (directory|file) ownership or permissions)$/
+      const message = error.code === 'CHAT_STATE_DAMAGED' ? 'Agent-chat delivery state is damaged; operator recovery required' : !error.code && allowed.test(error.message) ? error.message : FAILED
       send(id, { isError: true, content: [{ type: 'text', text: message }] })
     }
   })
@@ -403,9 +462,12 @@ function main() {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { main() }
-  catch {
+  catch (error) {
     const legacy = ['AGENT_CHAT_PROJECT', 'AGENT_CHAT_DIR'].filter(name => process.env[name])
+    // An unsafe folder is named: it's the user's own path, and they can fix it.
+    const unsafe = error?.message === 'unsafe directory ownership or permissions' && typeof error.path === 'string'
     process.stderr.write(legacy.length ? `Agent-chat 2 has no ${legacy.join(' or ')}: rooms belong to one repository now. Remove it from this server's environment.\n`
+      : unsafe ? unsafeFolderLine(error.path) + '\n'
       : 'Agent-chat failed to start; operator configuration or storage review required.\n')
     process.exitCode=1
   }

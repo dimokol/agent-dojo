@@ -61,6 +61,9 @@ import {sessionStartPlan,registerWithRetry,registrationFailureLine} from './clau
 import {projectNoticeId,noticeDirectory} from './notices.mjs'
 import {claudeParticipantId} from './notice-files.mjs'
 import {createStore} from './store.mjs'
+// These tests cover the version gate, which the plugin ships switched off; turn it on here so a
+// plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
+process.env.AGENT_CHAT_VERSION_CHECK = 'on'
 const CONVERSATION='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',OTHER='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 function noticeFixture(t){
   const dir=fs.realpathSync(fixture(t)),stateRoot=path.join(dir,'state'),chats=path.join(dir,'chats'),project=path.join(dir,'project'),profile=path.join(dir,'profile')
@@ -79,7 +82,7 @@ test('startup prints the project orphan line once; resume, clear and fork do not
   fs.writeFileSync(path.join(noticeDirectory(f.stateRoot),`project-${projectNoticeId(f.chats,f.project)}.orphans`),JSON.stringify({schema:1,count:3,oldest_at:oldest}),{mode:0o600})
   const startup=JSON.parse(f.run([],start(f,'startup')))
   assert.equal(startup.hookSpecificOutput.hookEventName,'SessionStart')
-  assert.equal(startup.systemMessage.split('\n').filter(line=>line.startsWith('agent-chat:')).join('\n'),`agent-chat: 3 unread messages to closed sessions, oldest 2d; run ${distribution.unreadCommand} to review`)
+  assert.equal(startup.systemMessage.split('\n').filter(line=>line.startsWith('agent-chat:')).join('\n'),`agent-chat: 3 unread messages to closed sessions, oldest 2d; to review, run ${distribution.unreadCommand} or ask the agent to call agent-chat's unread tool`)
   for(const source of ['resume','clear','fork'])assert.doesNotMatch(f.run([],start(f,source)),/closed sessions/)
 })
 test('compact keeps the conversation: no restore, registration task or version notice',t=>{

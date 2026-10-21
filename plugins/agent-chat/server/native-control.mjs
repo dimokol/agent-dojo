@@ -172,7 +172,7 @@ export function createNativeControl({ WebSocket, timeoutMs = 3000, executor = ex
         // The version command does not start a daemon. Only its verified ENOENT
         // failure and an absent expected alias establish a stopped profile.
         if (allowStopped && !fs.existsSync(alias) && typeof error.stderr === 'string' &&
-            error.stderr.trim().endsWith('No such file or directory (os error 2)')) return []
+            /\(os error 2\)$/.test(error.stderr.trim())) return []
         throw new Error('Native daemon unavailable')
       }
       if (output.code !== undefined && output.code !== 0) throw new Error('Native daemon unavailable')

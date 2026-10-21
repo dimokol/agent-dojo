@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { restoreClaudeMemberships, rememberClaudeMembership } from './claude-memberships.mjs'
-import { identifier, slug, ensureDirectory, readJson, atomicJson, append, locked, projectDirectory, predictProjectDirectory } from './store-files.mjs'
+import { identifier, slug, canonicalRoot, projectStateKey, migrateProjectState, ensureDirectory, readJson, atomicJson, append, locked, projectDirectory, predictProjectDirectory } from './store-files.mjs'
 import { createLogReader } from './canonical-log.mjs'
 import { distribution } from './distribution.mjs'
 import { syncNotices, syncNameCache } from './notices.mjs'
@@ -32,10 +32,13 @@ function validatePost({ room, from, to = 'all', channel = 'main', message, reply
   return { room, from, to, channel, message, reply_to, idempotency_key, policy: postPolicy({ to, fyi, urgent }) }
 }
 
-export function createStore({ root, projectRoot, stateRoot = path.join(root, '.runtime'), now = Date.now }) {
+export function createStore({ root: givenRoot, projectRoot, stateRoot = path.join(givenRoot, '.runtime'), now = Date.now }) {
+  const root = canonicalRoot(givenRoot)
   ensureDirectory(stateRoot)
   if (fs.statSync(stateRoot).mode & 0o077) throw new Error('operational state directory must be private')
-  const privateDir = path.join(stateRoot, 'projects', crypto.createHash('sha256').update(path.resolve(root) + '\n' + fs.realpathSync(projectRoot)).digest('hex').slice(0, 24))
+  migrateProjectState(givenRoot, projectRoot, stateRoot)
+  const privateDir = path.join(stateRoot, 'projects', projectStateKey(givenRoot, projectRoot))
+  let derivedFailureReported = false
   // A directory where no room is ever used leaves no trace. Without a project folder or private
   // state, both are created by the first change, not when a session starts: every Claude and
   // Codex start in any folder used to add an empty project folder to the chat root.
@@ -83,10 +86,12 @@ export function createStore({ root, projectRoot, stateRoot = path.join(root, '.r
     append(p.md, `# ${title}\n\n_room \`${room}\` · created ${created}_\n`)
     return { room, title, created }
   }
-  const unreadName = (state, name, id) => Object.entries(state.rooms).some(([room,rs])=>records(room).some(message=>
+  const logOrNull = room => { try { return records(room) } catch { return null } }
+  // A damaged log can't prove the name has no open mail, so it keeps the reservation.
+  const unreadName = (state, name, id) => Object.entries(state.rooms).some(([room,rs])=>logOrNull(room)?.some(message=>
     message.to.toLowerCase()===name.toLowerCase() && !isBroadcast(message.to) &&
     (rs.delivery_owners?.[message.id]?.participant_id ?? message.to_id ?? rs.legacy_recipients?.[message.id])===id && !isDismissed(rs,message,id) &&
-    ![...Object.values(rs.members),...Object.values(rs.retired_members??{})].some(member=>member.participant_id===id&&(completed(member.deliveries[message.id])||(!member.deliveries[message.id]&&(member.received_cursor??0)>=message.cursor)))))
+    ![...Object.values(rs.members),...Object.values(rs.retired_members??{})].some(member=>member.participant_id===id&&(completed(member.deliveries[message.id])||(!member.deliveries[message.id]&&(member.received_cursor??0)>=message.cursor)))) ?? true)
   const owner = (state,name) => nameOwner(state,name,now(),(name,id)=>unreadName(state,name,id))
   // `resolved`: the recipient was just assigned, so a watermark past the message proves nothing.
   const enqueue = (state, room, member, messages, resolved = false) => {
@@ -141,6 +146,13 @@ export function createStore({ root, projectRoot, stateRoot = path.join(root, '.r
         const member=state.read_index===1&&Object.values(roomState.members).find(row=>row.participant_id===target)
         if(member)enqueue(state,room,member,[message],true)
       }
+      // A log replaced by a shorter copy: cursors past its end would hide new mail as already routed
+      // or received. A log that is briefly missing reads as empty and must not reset anything.
+      if (messages.length < roomState.routed_cursor && fs.existsSync(paths(room).log)) {
+        roomState.routed_cursor = messages.length
+        for (const row of [...Object.values(roomState.members), ...Object.values(roomState.retired_members ?? {})])
+          for (const key of ['after_cursor', 'received_cursor', 'legacy_cursor']) if (row[key] > messages.length) row[key] = messages.length
+      }
       const added = messages.slice(roomState.routed_cursor)
       if (added.length) {
         for (const member of Object.values(roomState.members)) enqueue(state,room,member,added)
@@ -159,9 +171,14 @@ export function createStore({ root, projectRoot, stateRoot = path.join(root, '.r
         compactReadIndex(roomState, messages, indexed(room), { now: now(), sender })
       }
       atomicJson(statePath, state)
-      // Derived hint files; each reports its own failure and never fails the write.
-      syncNotices({ stateRoot, projectId: path.basename(privateDir), state, now: now(), records })
-      syncNameCache({ stateRoot, state })
+      // Derived hint files; each reports its own failure and never fails the write. A cause that
+      // lasts would keep them stale, so the first failure goes to stderr (the MCP log), once.
+      const derived = [syncNotices({ stateRoot, projectId: path.basename(privateDir), state, now: now(), records }), syncNameCache({ stateRoot, state })]
+      const failure = derived.find(result => result?.error)?.error
+      if (failure && !derivedFailureReported) {
+        derivedFailureReported = true
+        process.stderr.write(`Agent-chat could not update its unread notices or name cache (${failure}); mail and inboxes are unaffected. Check that the agent-chat state folder and its notices folder are yours and closed to other users.\n`)
+      }
     }
     return result
   })
@@ -266,10 +283,17 @@ export function createStore({ root, projectRoot, stateRoot = path.join(root, '.r
     post(args) {
       const validated = validatePost(args)
       materialize()
-      return transact(state => {
-        if (args.sessionId !== undefined) validated.from=requireMember(state, validated.room, validated.from, args.sessionId,args.participantId).agent
-        return appendPost(validated, state)
-      })
+      let posted
+      try {
+        return transact(state => {
+          if (args.sessionId !== undefined) validated.from=requireMember(state, validated.room, validated.from, args.sessionId,args.participantId).agent
+          return posted = appendPost(validated, state)
+        })
+      } catch (error) {
+        // The log line is durable; the next transaction routes it from routed_cursor.
+        if (!posted) throw error
+        return { ...posted, state_error: 'Delivery state could not be saved; the post is durable and will be routed on the next operation' }
+      }
     },
     // Internal recovery path. The facade must authorize an already bound sender
     // before using this; damaged metadata cannot establish a new identity.
@@ -279,22 +303,28 @@ export function createStore({ root, projectRoot, stateRoot = path.join(root, '.r
       if (!Number.isInteger(limit) || limit < 1 || limit > 10000) throw new Error('invalid history limit')
       return transact(() => structuredClone(records(room).filter((record) => !channel || record.channel === channel).slice(-limit)))
     },
-    join({ room, agent, session, after_cursor }) {
+    // create: a title to make the room with if it doesn't exist. The name is checked first, so a
+    // join that fails leaves no room behind.
+    join({ room, agent, session, after_cursor, create }) {
       identifier(room, 'room'); identifier(agent, 'agent')
       if (isBroadcast(agent)) throw new Error('agent alias is reserved for broadcasts')
       if (!session || typeof session.id !== 'string' || !session.id || session.id.length > 300 || typeof session.runtime !== 'string' || !session.runtime || (session.endpoint !== undefined && (typeof session.endpoint !== 'string' || !session.endpoint))) throw new Error('session id and runtime required; endpoint must be a nonempty string if provided')
       if (session.pid !== undefined && (!Number.isInteger(session.pid) || session.pid <= 0)) throw new Error('session pid must be a positive integer')
       if (session.profileHome !== undefined && (typeof session.profileHome !== 'string' || !session.profileHome)) throw new Error('invalid profileHome')
       if (after_cursor !== undefined && (!Number.isInteger(after_cursor) || after_cursor < 0)) throw new Error('invalid after_cursor')
+      if (create !== undefined && (typeof create !== 'string' || !create.trim() || create.length > 200)) throw new Error('title must contain 1 to 200 characters')
+      if (create !== undefined) materialize()
       return transact((state) => {
-        if (!roomExists(room)) throw new Error('room does not exist')
-        const messages = records(room)
+        const missing = !roomExists(room)
+        if (missing && create === undefined) throw new Error('room does not exist')
+        const messages = missing ? [] : records(room)
         const rs = state.rooms[room] ||= { routed_cursor: messages.length, members: {} }
         adoptClosedName(state,session,agent,now(),records)
         const participant=registerParticipant(state,session,agent,now(),(name,id)=>unreadName(state,name,id))
         const previous = rs.members[agent]
         const sameIdentity = previous?.participant_id === participant.id
         if (previous?.joined && !sameIdentity) throw new Error('agent alias already joined by another session; leave it explicitly')
+        if (missing) makeRoom(room, create.trim())
         // Metadata comes from the validating facade. A PID records identity, not proven liveness.
         const metadata = { ...session }
         rememberClaudeMembership(state,{room,agent,session})
@@ -311,9 +341,12 @@ export function createStore({ root, projectRoot, stateRoot = path.join(root, '.r
         rs.members[agent] = member
         enqueue(state,room,member,messages)
         for(const [other,otherState] of Object.entries(state.rooms))if(other!==room&&!Object.values(otherState.members).some(row=>row.participant_id===participant.id)) {
-          const unclaimed={...structuredClone(member),joined:false,after_cursor:records(other).length,received_cursor:0,deliveries:{},ring_times:[]}
+          let log
+          // A damaged room gets no placeholder; its mail for this name comes back when the name joins it.
+          try { log = records(other) } catch { continue }
+          const unclaimed={...structuredClone(member),joined:false,after_cursor:log.length,received_cursor:0,deliveries:{},ring_times:[]}
           delete unclaimed.legacy_cursor
-          enqueue(state,other,unclaimed,records(other))
+          enqueue(state,other,unclaimed,log)
           if(Object.keys(unclaimed.deliveries).length)otherState.members[agent]=unclaimed
         }
         return structuredClone(member)
