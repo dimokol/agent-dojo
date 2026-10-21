@@ -1,53 +1,249 @@
 #!/usr/bin/env bash
-# Runs scan.sh against a fake HOME and checks it prints its sections and deletes nothing.
+# Runs scan.sh against a fake HOME: checks the table, what it holds back and why,
+# and that it deletes nothing. macOS (lsof, BSD tools); disk-map has its own suite.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 scan="$here/../skills/storage-reclaim/scripts/scan.sh"
 fail=0
 check() { if [ "$2" = ok ]; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+has()   { case "$out" in *"$1"*) echo ok;; *) echo bad;; esac; }
+hasnt() { case "$out" in *"$1"*) echo bad;; *) echo ok;; esac; }
 
-if ! command -v zsh >/dev/null 2>&1; then echo "zsh not installed, skipping"; exit 0; fi
+for t in zsh git lsof python3; do command -v $t >/dev/null 2>&1 || { echo "$t not installed, skipping"; exit 0; }; done
 
 fake=$(mktemp -d) || exit 1
 : "${fake:?mktemp failed}"
-trap 'rm -rf "${fake:?}"' EXIT
+fake=$(cd "$fake" && pwd -P)
+pids=()
+trap 'kill "${pids[@]}" 2>/dev/null; rm -rf "${fake:?}"' EXIT
 
-mkdir -p "$fake/Documents/proj/node_modules/pkg" \
-         "$fake/Documents/proj/.locks" \
-         "$fake/Documents/proj-worktrees/feat" \
-         "$fake/Downloads" "$fake/.npm/_cacache"
-echo data > "$fake/Documents/proj/node_modules/pkg/index.js"
-echo held > "$fake/Documents/proj/.locks/session-a"
-echo cache > "$fake/.npm/_cacache/blob"
-dd if=/dev/zero of="$fake/Downloads/big.zip" bs=1048576 count=101 2>/dev/null
+old=$(( $(date +%s) - 30 * 86400 ))
+stamp=$(date -r "$old" +%Y%m%d%H%M)
+export GIT_AUTHOR_DATE="@$old +0000" GIT_COMMITTER_DATE="@$old +0000"
+g() { git -c user.email=t@example.com -c user.name=t -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
+mb() { mkdir -p "$(dirname "$1")"; dd if=/dev/zero of="$1" bs=1048576 count="$2" 2>/dev/null; }
+node_project() {  # node_project DIR: a committed package.json with ignored node_modules and .next
+  mkdir -p "$1"
+  echo '{}' > "$1/package.json"
+  printf 'node_modules/\n.next/\n.env\n' > "$1/.gitignore"
+  g -C "$1" init -q && g -C "$1" add . && g -C "$1" commit -qm init
+  mb "$1/node_modules/pkg/index.js" 2
+  mb "$1/.next/cache/x" 1
+}
 
-snapshot() { (cd "$fake" && find . | LC_ALL=C sort && find . -type f -exec cksum {} + | LC_ALL=C sort); }
+D=$fake/Documents
+node_project "$D/idle-app"
+node_project "$D/busy-app"
+node_project "$D/locked-app"; mkdir -p "$D/locked-app/.locks"; echo held > "$D/locked-app/.locks/session-a"
+mkdir -p "$D/proj-worktrees/feat"; echo '{}' > "$D/proj-worktrees/feat/package.json"; mb "$D/proj-worktrees/feat/node_modules/a/b" 1
+# A dist/ that git tracks is content, not build output.
+mkdir -p "$D/tracked-dist/dist"; echo '{}' > "$D/tracked-dist/package.json"; echo keep > "$D/tracked-dist/dist/app.js"
+g -C "$D/tracked-dist" init -q && g -C "$D/tracked-dist" add . && g -C "$D/tracked-dist" commit -qm init
+
+# A repo with an origin and three worktrees: merged and clean, locked, and one whose .env differs.
+g init -q --bare "$fake/remotes/origin.git"
+node_project "$D/repo"
+echo 'A=1' > "$D/repo/.env"
+g -C "$D/repo" remote add origin "$fake/remotes/origin.git"
+g -C "$D/repo" push -q origin main
+for b in merged envdiff; do g -C "$D/repo" worktree add -q "$D/repo-wt/$b" -b "$b"; done
+g -C "$D/repo-wt/merged" commit -q --allow-empty -m work
+g -C "$D/repo" merge -q --ff-only merged && g -C "$D/repo" push -q origin main
+mb "$D/repo-wt/merged/node_modules/x" 1
+cp "$D/repo/.env" "$D/repo-wt/merged/.env"
+g -C "$D/repo-wt/envdiff" push -q origin envdiff; echo 'A=2' > "$D/repo-wt/envdiff/.env"
+g -C "$D/repo" worktree add -q "$D/repo-wt/locked" -b locked && g -C "$D/repo" push -q origin locked
+g -C "$D/repo" worktree lock --reason "agent running" "$D/repo-wt/locked"
+
+C=$fake/Library/Caches
+mb "$C/dropme/blob" 3; mb "$C/keepme/blob" 3; mb "$C/kept-by-decision/blob" 3
+mkdir -p "$C/ms-playwright-mcp/brave/Default"; echo s > "$C/ms-playwright-mcp/brave/Default/Cookies"
+mb "$fake/Downloads/photos.zip" 101
+# Downloaded Playwright browsers next to the MCP's login profile (cookies four levels down).
+mb "$C/ms-playwright/chromium-1200/chrome" 2
+mkdir -p "$C/ms-playwright/mcp-chrome-profile/Default/Network"; echo s > "$C/ms-playwright/mcp-chrome-profile/Default/Network/Cookies"
+# Names a glob would misread, a glob that protects a file inside a cache, and a dotfile lock.
+mb "$C/C#tool/blob" 1; mb "$C/bar (old)/blob" 1; mb "$C/appx/keep.db" 1; mb "$C/appx/tmp" 1
+node_project "$D/dotlock-app"; mkdir -p "$D/dotlock-app/.locks"; echo held > "$D/dotlock-app/.locks/.session-a"
+# Outside git, a dist/ may be the only copy.
+mkdir -p "$D/thesis/dist"; echo x > "$D/thesis/requirements.txt"; echo draft > "$D/thesis/dist/paper.pdf"
+# A project root reached through a symlink, with a process running inside a non-git project.
+mkdir -p "$fake/real-dev/code/tool/.venv/lib"; echo x > "$fake/real-dev/code/tool/requirements.txt"; mb "$fake/real-dev/code/tool/.venv/lib/big" 1
+ln -s "$fake/real-dev" "$fake/Dev"
+# An editor extension downgraded on purpose: extensions.json names the older one.
+E=$fake/.vscode/extensions; mb "$E/pub.ext-1.0.0/a" 1; mb "$E/pub.ext-2.0.0/a" 1
+echo '[{"identifier":{"id":"pub.ext"},"relativeLocation":"pub.ext-1.0.0"}]' > "$E/extensions.json"
+
+# From the PR #7 review (each one reached rec before the fix):
+# a worktree whose ignored .data/ holds a local database,
+printf '.data/\n' >> "$D/repo/.git/info/exclude"
+g -C "$D/repo" worktree add -q "$D/repo-wt/dataw" -b dataw && g -C "$D/repo" push -q origin dataw
+mkdir -p "$D/repo-wt/dataw/.data/hub/d1"; echo 'UNIQUE LOCAL DB' > "$D/repo-wt/dataw/.data/hub/d1/db.sqlite"
+# a worktree whose git status fails, and one whose origin is gone,
+g -C "$D/repo" worktree add -q "$D/repo-wt/brokenw" -b brokenw && g -C "$D/repo" push -q origin brokenw
+echo 'gitdir: /nonexistent' > "$D/repo-wt/brokenw/.git"
+g init -q --bare "$fake/remotes/gone.git"
+node_project "$D/repo2"; g -C "$D/repo2" remote add origin "$fake/remotes/gone.git"; g -C "$D/repo2" push -q origin main
+g -C "$D/repo2" worktree add -q "$D/repo2-wt/feat" -b feat && g -C "$D/repo2" push -q origin feat
+rm -rf "$fake/remotes/gone.git"
+# a non-git project inside another repo's ignored folder, its dist/ the only copy,
+mkdir -p "$D/work"; echo 'scratch/' > "$D/work/.gitignore"; g -C "$D/work" init -q; g -C "$D/work" add .; g -C "$D/work" commit -qm i
+mkdir -p "$D/work/scratch/release/dist"; echo '{}' > "$D/work/scratch/release/package.json"; echo 'only copy' > "$D/work/scratch/release/dist/app-v1.js"
+# a .venv holding an editable git checkout with an uncommitted edit,
+mkdir -p "$D/pyproj"; echo x > "$D/pyproj/requirements.txt"; echo '.venv/' > "$D/pyproj/.gitignore"; g -C "$D/pyproj" init -q; g -C "$D/pyproj" add .; g -C "$D/pyproj" commit -qm i
+mkdir -p "$D/pyproj/.venv/src/mylib"; echo v1 > "$D/pyproj/.venv/src/mylib/lib.py"
+g -C "$D/pyproj/.venv/src/mylib" init -q; g -C "$D/pyproj/.venv/src/mylib" add .; g -C "$D/pyproj/.venv/src/mylib" commit -qm i; echo edit >> "$D/pyproj/.venv/src/mylib/lib.py"
+# dev servers started from a parent folder: with a path argument, from a git monorepo root,
+# and from a plain folder with no path arguments (not seen: the delete-time re-check covers it),
+node_project "$D/ws/app1"; echo 'import time' > "$D/ws/app1/server.py"
+mkdir -p "$D/mono/apps/web"; echo '{}' > "$D/mono/package.json"; echo '{}' > "$D/mono/apps/web/package.json"; echo 'node_modules/' > "$D/mono/.gitignore"
+g -C "$D/mono" init -q && g -C "$D/mono" add . && g -C "$D/mono" commit -qm i; mb "$D/mono/apps/web/node_modules/x" 1
+mkdir -p "$D/loose/a"; echo '{}' > "$D/loose/a/package.json"; mb "$D/loose/a/node_modules/x" 1
+# never-touch entries with a trailing slash and through a symlinked root,
+node_project "$D/ntslash"
+mkdir -p "$fake/real-dev/code/tool2/.venv/lib"; echo x > "$fake/real-dev/code/tool2/requirements.txt"; mb "$fake/real-dev/code/tool2/.venv/lib/big" 1
+# editor local history under Caches, a pinned older claude, and a DerivedData folder built today,
+mb "$C/JetBrains/IntelliJIdea2025.1/LocalHistory/changes.storageData" 1
+V=$fake/.local/share/claude/versions; mb "$V/1.0.0" 1; mb "$V/2.0.0" 1; mb "$V/3.0.0" 1
+mkdir -p "$fake/.local/bin"; ln -s "$V/1.0.0" "$fake/.local/bin/claude"
+mb "$fake/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/x" 1
+# a toolchain repo an SDK cloned into its own ignored folder (used daily, never committed to),
+mkdir -p "$D/sdk"; echo 'upstream/' > "$D/sdk/.gitignore"; g -C "$D/sdk" init -q && g -C "$D/sdk" add . && g -C "$D/sdk" commit -qm i
+node_project "$D/sdk/upstream/tool"
+# and an idle project whose two build folders share hardlinks (one row, counted once).
+node_project "$D/linked"; mkdir -p "$D/linked/.next"; mb "$D/linked/node_modules/big" 150; ln "$D/linked/node_modules/big" "$D/linked/.next/big"
+
+# Everything old enough to count as idle.
+find "$fake" -exec touch -h -t "$stamp" {} + 2>/dev/null
+echo fresh > "$fake/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/x"
+touch -t "$stamp" "$fake/Library/Developer/Xcode/DerivedData/App-abc"
+
+conf=$fake/.config/storage-reclaim; mkdir -p "$conf"
+printf '~/Library/Caches/keepme\tthe user said keep\n' > "$conf/never-touch.txt"
+printf '~/Library/Caches/C#tool\tliteral name\n~/Library/Caches/appx/*.db\ta file inside a cache\n' >> "$conf/never-touch.txt"
+printf '~/Documents/ntslash/\ttrailing slash\n~/Dev/code/tool2\tthrough a symlink\n~/Library/Caches/C#t*\tglob with #\n~/Library/Caches/bar (o*\tglob with ( )\n' >> "$conf/never-touch.txt"
+printf 'date\tpath\tdecision\trecheck\tnote\n2026-01-01\t~/Library/Caches/kept-by-decision\tkeep\t2999-01-01\ttest\n2026-01-01\t~/Library/Caches/bar (old)\tkeep\tnever\ttest\n' > "$conf/decisions.tsv"
+
+# A process sitting in busy-app's root with nothing open under node_modules: the gap lsof alone misses.
+(cd "$D/busy-app" && exec sleep 300) & pids+=($!); disown $!
+(cd "$fake/Dev/code/tool" && exec sleep 300) & pids+=($!); disown $!
+(cd "$D/ws" && exec -a python3 perl -e 'sleep 300' app1/server.py) & pids+=($!); disown $!
+(cd "$D/mono" && exec -a npm perl -e 'sleep 300' -- --workspaces run dev) & pids+=($!); disown $!
+(cd "$D/loose" && exec -a npm perl -e 'sleep 300' -- --workspaces run dev) & pids+=($!); disown $!
+(exec -a WiFiCloudAssetsXPCService sleep 300) & pids+=($!); disown $!
+
+# A simulator runtime no device uses, through a stand-in xcrun.
+mkdir -p "$fake/bin"
+cat > "$fake/bin/xcrun" <<'EOF'
+#!/bin/sh
+case "$*" in
+  "simctl runtime list -j") echo '{"AAAA-1111": {"runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-3", "version": "18.3.1", "build": "22D8075", "sizeBytes": 8400000000, "deletable": true, "path": "/nonexistent/AAAA.dmg", "mountPath": "/nonexistent/mnt/AAAA"}}' ;;
+  "simctl list devices -j") echo '{"devices": {}}' ;;
+esac
+EOF
+chmod +x "$fake/bin/xcrun"
+
+mkdir -p "$fake/cwd"; echo junk > "$fake/cwd/zzz-file"   # a first run must not read the cwd
+snapshot() { (cd "$fake" && find . -path ./.config -prune -o -path ./.local -prune -o -print | LC_ALL=C sort && find . -path ./.config -prune -o -path ./.local -prune -o -type f -exec cksum {} + | LC_ALL=C sort); }
 before=$(snapshot)
 
-out=$(HOME="$fake" STORAGE_RECLAIM_LOCK_DIR=.locks STORAGE_RECLAIM_WORKTREE_SUFFIX=-worktrees zsh "$scan" 2>&1)
-status=$?
+run() { env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$fake" PATH="$fake/bin:$PATH" STORAGE_RECLAIM_MIN_MB=0 STORAGE_RECLAIM_ROWS=50 \
+  STORAGE_RECLAIM_PROJECT_ROOTS="$fake/Documents:$fake/Dev/code" \
+  STORAGE_RECLAIM_LOCK_DIR=.locks STORAGE_RECLAIM_WORKTREE_SUFFIX=-worktrees zsh "$scan" "$@" 2>&1; }
+out=$(cd "$fake/cwd" && run); status=$?
 after=$(snapshot)
 
 [ "$status" -eq 0 ] && s=ok || s=bad; check "exits 0" $s
-for sec in "FREE SPACE" "BIGGEST DIRECTORIES" "SAFETY GATE: processes" "SAFETY GATE: locks" \
-           "CACHES" "DEPENDENCY FOLDERS" "NEEDS A LOOK"; do
-  case "$out" in *"=== $sec"*) s=ok;; *) s=bad;; esac; check "prints section: $sec" $s
-done
-case "$out" in *"LOCK HELD: $fake/Documents/proj/.locks/session-a"*) s=ok;; *) s=bad;; esac
-check "lists the configured lock" $s
-case "$out" in *"worktree folder in use: $fake/Documents/proj-worktrees"*) s=ok;; *) s=bad;; esac
-check "lists the configured worktree folder" $s
-case "$out" in *"$fake/Documents/proj/node_modules"*) s=ok;; *) s=bad;; esac
-check "lists node_modules" $s
-case "$out" in *"$fake/Downloads/big.zip"*) s=ok;; *) s=bad;; esac
-check "flags the large archive" $s
-case "$out" in *"Nothing was deleted"*) s=ok;; *) s=bad;; esac
-check "prints the survey-only footer" $s
-[ "$before" = "$after" ] && s=ok || s=bad; check "fake HOME is unchanged (nothing deleted or written)" $s
+case "$out" in "QUICK WINS · "*) s=ok;; *) s=bad;; esac; check "starts with the QUICK WINS line" $s
+check "prints the back legend" "$(has 'back: none = junk')"
+check "prints a rec line" "$(has 'rec = Q')"
+for sec in WORKTREES PROJECTS "SYSTEM SIDE" "NEEDS A LOOK" "HELD BACK" ACTIONS; do check "prints section: $sec" "$(has "=== $sec")"; done
 
-out2=$(HOME="$fake" zsh "$scan" 2>&1)
-case "$out2" in *"no lock_dir configured"*) s=ok;; *) s=bad;; esac
-check "unset lock_dir is skipped with a note" $s
+row() { printf '%s\n' "$out" | sed -n '/^QUICK WINS/,/^back:/p' | grep -F -- "$1"; }
+id_of() { row "$1" | awk '{ print $1 }'; }
+rec=$(printf '%s\n' "$out" | sed -n 's/^rec = \(.*\) · .*/\1/p')
+
+i=$(id_of 'idle-app'); [ -n "$i" ] && s=ok || s=bad; check "idle project gets a rebuild row" $s
+row 'idle-app' | grep -q 'node_modules, .next' && s=ok || s=bad; check "idle row names node_modules and .next" $s
+case " $rec " in *" $i "*) s=ok;; *) s=bad;; esac; check "idle project is in rec" $s
+[ -z "$(id_of 'busy-app')" ] && s=ok || s=bad; check "busy project (process cwd at its root) gets no row" $s
+case "$out" in *"~/Documents/busy-app/node_modules  [in use]"*) s=ok;; *) s=bad;; esac; check "busy node_modules listed under HELD BACK" $s
+[ -z "$(id_of 'tracked-dist')" ] && s=ok || s=bad; check "a dist/ git tracks is not proposed" $s
+[ -z "$(id_of 'locked-app')" ] && s=ok || s=bad; check "a project holding a lock file is not proposed" $s
+case "$out" in *"locked-app/node_modules  [locked]"*) s=ok;; *) s=bad;; esac; check "lock_dir hold is named" $s
+[ -z "$(id_of 'proj-worktrees')" ] && s=ok || s=bad; check "worktree_suffix folders are not proposed" $s
+
+w=$(id_of 'worktree ~/Documents/repo-wt/merged'); [ -n "$w" ] && s=ok || s=bad; check "merged clean worktree gets a git row" $s
+row 'repo-wt/merged' | grep -q ' git ' && s=ok || s=bad; check "worktree row is labelled git" $s
+[ -z "$(id_of 'repo-wt/envdiff')" ] && s=ok || s=bad; check "worktree whose .env differs is not proposed" $s
+case "$out" in *"repo-wt/envdiff  [envdiff, 0 dirty"*"local-only files: 1]"*) s=ok;; *) s=bad;; esac; check "envdiff shows 1 local-only file" $s
+[ -z "$(id_of 'repo-wt/locked')" ] && s=ok || s=bad; check "locked worktree is not proposed" $s
+check "locked worktree shows its reason" "$(has 'LOCKED (agent running)')"
+case "$out" in *"$(printf 'git -C %s worktree remove %s' "$D/repo" "$D/repo-wt/merged")"*) s=ok;; *) s=bad;; esac
+check "worktree action is git worktree remove" $s
+
+q=$(id_of '~/Library/Caches/dropme'); [ -n "$q" ] && s=ok || s=bad; check "a cache gets a regrows row" $s
+[ -z "$(id_of 'keepme')" ] && s=ok || s=bad; check "never-touch path is not proposed" $s
+check "never-touch hold is named" "$(has 'Caches/keepme  [never-touch]')"
+[ -z "$(id_of 'kept-by-decision')" ] && s=ok || s=bad; check "a keep decision before its recheck is not proposed" $s
+[ -z "$(id_of 'ms-playwright-mcp')" ] && s=ok || s=bad; check "a browser profile is not proposed as a cache" $s
+[ -z "$(id_of 'photos.zip')" ] && s=ok || s=bad; check "an archive never gets an ID" $s
+check "the archive is counted under needs a look" "$(has 'needs a look: 1 files')"
+
+r=$(id_of 'iOS 18.3.1 simulator runtime'); [ -n "$r" ] && s=ok || s=bad; check "an unused simulator runtime gets a download row" $s
+check "runtime action is simctl runtime delete" "$(has 'xcrun simctl runtime delete AAAA-1111')"
+
+b=$(id_of 'ms-playwright: 1 browser build'); [ -n "$b" ] && s=ok || s=bad; check "playwright browser builds get a row" $s
+case "$out" in *"rm -rf $C/ms-playwright/chromium-1200"*) s=ok;; *) s=bad;; esac; check "the row deletes only the browser build" $s
+case "$out" in *"rm -rf $C/ms-playwright "*|*"rm -rf $C/ms-playwright"$'\n'*|*"ms-playwright/mcp-chrome-profile "*) s=bad;; *) s=ok;; esac
+check "the MCP login profile is never in an action" $s
+[ -z "$(id_of 'C#tool')" ] && s=ok || s=bad; check "never-touch path with # is held" $s
+[ -z "$(id_of 'bar (old)')" ] && s=ok || s=bad; check "keep decision for a path with ( ) is held" $s
+[ -z "$(id_of 'Caches/appx')" ] && s=ok || s=bad; check "a cache holding a never-touch glob match is held" $s
+[ -z "$(id_of 'dotlock-app')" ] && s=ok || s=bad; check "a lock folder with only dotfiles still locks" $s
+[ -z "$(id_of 'thesis')" ] && s=ok || s=bad; check "dist/ outside git is not proposed" $s
+[ -z "$(id_of 'code/tool')" ] && s=ok || s=bad; check "a running project under a symlinked root is not idle" $s
+case "$out" in *"rm -rf $E/pub.ext-2.0.0"*) s=ok;; *) s=bad;; esac; check "the extension version not in use is proposed" $s
+case "$out" in *"$E/pub.ext-1.0.0"*) s=bad;; *) s=ok;; esac; check "the active (older) extension version is kept" $s
+[ -z "$(id_of 'repo-wt/dataw')" ] && s=ok || s=bad; check "worktree with an ignored .data/ database is not proposed" $s
+case "$out" in *"repo-wt/dataw  [dataw, 0 dirty"*"local-only files: 1]"*) s=ok;; *) s=bad;; esac; check ".data/ counts as a local-only file" $s
+[ -z "$(id_of 'repo-wt/brokenw')" ] && s=ok || s=bad; check "worktree whose git status fails is not proposed" $s
+check "a failed git status reads as unknown" "$(has 'brokenw, ? dirty')"
+[ -z "$(id_of 'repo2-wt/feat')" ] && s=ok || s=bad; check "worktree whose origin is gone is not proposed" $s
+check "origin gone reads as unknown" "$(has 'on origin: unknown')"
+[ -z "$(id_of 'scratch/release')" ] && s=ok || s=bad; check "dist/ in a non-git folder inside an ignored path is not proposed" $s
+[ -z "$(id_of 'pyproj')" ] && s=ok || s=bad; check "a .venv holding a git checkout is not proposed" $s
+check "the git checkout hold is named" "$(has 'pyproj/.venv  [holds a git checkout]')"
+[ -z "$(id_of 'ws/app1')" ] && s=ok || s=bad; check "app started from the parent folder with a path argument is in use" $s
+[ -z "$(id_of 'mono')" ] && s=ok || s=bad; check "monorepo app with a workspace process at the git root is in use" $s
+[ -n "$(id_of 'loose/a')" ] && s=ok || s=bad; check "known miss: no path arguments from a plain parent folder (re-checked at delete time)" $s
+[ -z "$(id_of 'ntslash')" ] && s=ok || s=bad; check "never-touch entry with a trailing slash holds" $s
+[ -z "$(id_of 'code/tool2')" ] && s=ok || s=bad; check "never-touch entry through a symlinked root holds" $s
+[ -n "$(id_of 'Caches/dropme')" ] && s=ok || s=bad; check "two absolute globs don't hold everything" $s
+[ -z "$(id_of 'JetBrains')" ] && s=ok || s=bad; check "a Caches folder with LocalHistory is not proposed" $s
+case "$out" in *"versions/1.0.0"*) s=bad;; *) s=ok;; esac; check "the pinned claude version is kept" $s
+case "$out" in *"rm -rf $V/2.0.0"*) s=ok;; *) s=bad;; esac; check "an unpinned older claude version is proposed" $s
+dd=$(id_of 'DerivedData'); case " $rec " in *" $dd "*) s=bad;; *) s=ok;; esac; check "DerivedData built today is not in rec" $s
+row 'linked:' | grep -q ' 0\.2 ' && s=ok || s=bad; check "hardlinks shared by a row's folders count once" $s
+case "$(printf '%s\n' "$out" | sed -n '/^dev processes:/,/^$/p')" in *WiFiCloudAssets*) s=bad;; *) s=ok;; esac; check "dev-process list skips names that only contain tsx" $s
+n=$(id_of 'sdk/upstream/tool'); [ -n "$n" ] && s=ok || s=bad; check "a repo nested in an SDK's ignored folder still gets a row" $s
+row 'sdk/upstream/tool' | grep -q 'nested in ~/Documents/sdk' && s=ok || s=bad; check "the nested row names its parent" $s
+case " $rec " in *" $n "*) s=bad;; *) s=ok;; esac; check "a nested toolchain repo stays out of rec" $s
+check "prints the survey-only footer" "$(has 'nothing deleted')"
+[ "$before" = "$after" ] && s=ok || s=bad; check "fake HOME unchanged outside the keep-lists (nothing deleted)" $s
+
+# First run without keep-lists copies the templates.
+rm -rf "$conf"; out2=$(run)
+[ -f "$conf/never-touch.txt" ] && [ -f "$conf/decisions.tsv" ] && s=ok || s=bad; check "first run copies the keep-list templates" $s
+grep -qv '^#' "$conf/never-touch.txt" && s=bad || s=ok; check "never-touch template holds comments only" $s
+
+if command -v dua >/dev/null 2>&1; then
+  check "full scan writes a map" "$(has 'map: ')"
+  check "first full run says so, never reads the cwd" "$(has '(first run')"
+  check "full scan prints WHAT GREW" "$(has '=== WHAT GREW')"
+else
+  echo "skip full scan: dua not installed"
+fi
 
 [ "$fail" -eq 0 ] && echo "all passed" || echo "failures"
 exit "$fail"

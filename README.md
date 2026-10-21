@@ -41,7 +41,7 @@ is a five-minute read.
 | [machine-pressure](plugins/machine-pressure) | Refuses a second e2e or Docker run, and heavy commands while CPU, memory or disk is in the red, plus a statusline script you add by hand. | hook, script |
 | [context-nudge](plugins/context-nudge) | One line when a session passes 250k, 400k and 600k tokens, or after an hour idle at 150k or more, so you compact or start fresh. | hook |
 | [worktree-hygiene](plugins/worktree-hygiene) | An audit to run at session start: merged worktrees, idle dependency folders, orphaned dev servers, free disk. Proposes, never deletes. | skill |
-| [storage-reclaim](plugins/storage-reclaim) | Disk cleanup that measures first and won't touch files a process or session is using. macOS. | skill |
+| [storage-reclaim](plugins/storage-reclaim) | Disk cleanup that opens with the biggest safe wins and a one-word "rec", and won't touch what a process or another session is using. macOS. Bundles disk-map, a treemap for any disk. | skills |
 | [agent-chat](plugins/agent-chat) | Agents in different terminals message each other, and a message wakes the idle Claude Code or Codex session it's for. Mail waits for closed sessions. | MCP server, hooks |
 | [verify-before-building](plugins/verify-before-building) | Fetches and checks the trunk before you branch, so nobody rebuilds what already merged. | skill |
 | [pr-review-loop](plugins/pr-review-loop) | Asks the reviewer once, applies or answers every finding, reruns your checks, stops when the PR is ready. Never merges on its own. | skill |
@@ -78,7 +78,7 @@ Tools that fit with these parts. Linked, not copied.
 | What | Why | Install |
 |---|---|---|
 | [superpowers](https://github.com/obra/superpowers), pr-review-toolkit, feature-dev, claude-md-management, skill-creator | Planning, subagent-driven builds, review agents, CLAUDE.md upkeep | `claude plugin install <name>@claude-plugins-official` |
-| [mattpocock/skills](https://github.com/mattpocock/skills): grilling, diagnosing-bugs, pr, handoff | Sharp questions before building, a debug loop that starts from a failing repro, PR bodies, handoff notes | `claude plugin install mattpocock-skills`, or one skill: `npx skills add mattpocock/skills --skill grilling` |
+| [mattpocock/skills](https://github.com/mattpocock/skills): grilling, diagnosing-bugs | Sharp questions before building, a debug loop that starts from a failing repro | `claude plugin install mattpocock-skills`, or one skill: `npx skills add mattpocock/skills --skill grilling` |
 | [pstack](https://github.com/cursor/plugins/tree/main/pstack): unslop, blast-radius, show-me-your-work | Cuts AI tells from writing, finds what a change could break, keeps a decision log | `npx skills add https://github.com/cursor/plugins/tree/main/pstack --skill unslop -a claude-code` (Cursor: `/add-plugin pstack`) |
 | [ccstatusline](https://www.npmjs.com/package/ccstatusline) | A configurable statusline; machine-pressure ships widgets for it | `npm install -g ccstatusline` |
 | [claude-notifications](https://github.com/dimokol/claude-notifications) (same author) | A sound and an OS banner when a Claude Code session in a VS Code terminal finishes or needs you. On macOS and Windows a click jumps to that window and terminal tab. | [VS Code marketplace](https://marketplace.visualstudio.com/items?itemName=dimokol.claude-notifications) |
