@@ -1,0 +1,8 @@
+# Paths no cleanup proposes. scan.sh holds back any candidate at or under these,
+# and any candidate that contains one.
+# One per line: path, a tab, the reason. ~ and * work. Lines starting with # are ignored.
+# .git folders and .env files are always protected; no need to list them.
+# Add a line whenever you say "keep X".
+#
+# ~/Library/Application Support/SomeApp	app data, not a cache
+# ~/code/fork-of-tool	fork with unpushed work, not a duplicate

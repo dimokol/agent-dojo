@@ -59,13 +59,14 @@ jobs:
           }
           for p in agent-chat git-guardrails pr-task-link-guard; do suite "$p" 'node --test tests/*.test.mjs'; done
           for p in context-nudge integration-branch-qa machine-pressure pr-review-loop; do suite "$p" 'bash tests/run.sh'; done
+          suite storage-reclaim 'bash tests/disk-map.sh'
           exit $fail
 
       - name: Test install.sh
         if: ${{ !cancelled() }}
         run: bash tests/install-test.sh
 
-      # storage-reclaim is a macOS tool (APFS volumes, ~/Library); its README marks Linux untested.
+      # storage-reclaim's scan is a macOS tool (APFS volumes, ~/Library, BSD tools); disk-map runs above on both.
       - name: Test storage-reclaim (macOS only)
         if: ${{ !cancelled() && runner.os == 'macOS' }}
         working-directory: plugins/storage-reclaim
