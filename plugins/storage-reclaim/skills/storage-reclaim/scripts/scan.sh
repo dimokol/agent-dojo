@@ -429,7 +429,13 @@ for top in ${(k)PROJ}; do
   (( $#kept )) || continue
   if idle "$top"; then
     names=(${(u)${kept[@]#$top/}})
-    cand rebuild Q 1 "$(tilde "$top"): ${(j:, :)names[1,4]}${names[5]:+, …} ($(age_note))" rm - $kept
+    # A repo nested in another repo (an SDK's toolchain checkout) reads idle while in daily use: no rec.
+    outer=$(git -C "${top:h}" rev-parse --show-toplevel 2>/dev/null)
+    if [[ -d $top/.git && -n $outer ]]; then
+      cand rebuild Q 0 "$(tilde "$top"): ${(j:, :)names[1,4]}${names[5]:+, …} ($(age_note), nested in $(tilde "$outer"))" rm - $kept
+    else
+      cand rebuild Q 1 "$(tilde "$top"): ${(j:, :)names[1,4]}${names[5]:+, …} ($(age_note))" rm - $kept
+    fi
     sum_bytes $kept; proj_rows+=("$REPLY"$'\t'"$(tilde "$top")  $(age_note)")
   else
     # Active: only build output that regrows, never the installs.

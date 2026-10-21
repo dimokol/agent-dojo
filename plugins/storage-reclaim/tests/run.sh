@@ -107,6 +107,9 @@ mb "$C/JetBrains/IntelliJIdea2025.1/LocalHistory/changes.storageData" 1
 V=$fake/.local/share/claude/versions; mb "$V/1.0.0" 1; mb "$V/2.0.0" 1; mb "$V/3.0.0" 1
 mkdir -p "$fake/.local/bin"; ln -s "$V/1.0.0" "$fake/.local/bin/claude"
 mb "$fake/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/x" 1
+# a toolchain repo an SDK cloned into its own ignored folder (used daily, never committed to),
+mkdir -p "$D/sdk"; echo 'upstream/' > "$D/sdk/.gitignore"; g -C "$D/sdk" init -q && g -C "$D/sdk" add . && g -C "$D/sdk" commit -qm i
+node_project "$D/sdk/upstream/tool"
 # and an idle project whose two build folders share hardlinks (one row, counted once).
 node_project "$D/linked"; mkdir -p "$D/linked/.next"; mb "$D/linked/node_modules/big" 150; ln "$D/linked/node_modules/big" "$D/linked/.next/big"
 
@@ -223,6 +226,9 @@ case "$out" in *"rm -rf $V/2.0.0"*) s=ok;; *) s=bad;; esac; check "an unpinned o
 dd=$(id_of 'DerivedData'); case " $rec " in *" $dd "*) s=bad;; *) s=ok;; esac; check "DerivedData built today is not in rec" $s
 row 'linked:' | grep -q ' 0\.2 ' && s=ok || s=bad; check "hardlinks shared by a row's folders count once" $s
 case "$(printf '%s\n' "$out" | sed -n '/^dev processes:/,/^$/p')" in *WiFiCloudAssets*) s=bad;; *) s=ok;; esac; check "dev-process list skips names that only contain tsx" $s
+n=$(id_of 'sdk/upstream/tool'); [ -n "$n" ] && s=ok || s=bad; check "a repo nested in an SDK's ignored folder still gets a row" $s
+row 'sdk/upstream/tool' | grep -q 'nested in ~/Documents/sdk' && s=ok || s=bad; check "the nested row names its parent" $s
+case " $rec " in *" $n "*) s=bad;; *) s=ok;; esac; check "a nested toolchain repo stays out of rec" $s
 check "prints the survey-only footer" "$(has 'nothing deleted')"
 [ "$before" = "$after" ] && s=ok || s=bad; check "fake HOME unchanged outside the keep-lists (nothing deleted)" $s
 

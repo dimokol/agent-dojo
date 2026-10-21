@@ -59,7 +59,7 @@ What the scan already decided, so you don't redo it:
 - **Idle project**: no commit, no file edit and no Claude Code or Codex session there for `idle_days`, and nothing running in it. Idle projects lose their installs and build output; active ones only build output that regrows.
 - **Only what git ignores**: a tracked `dist/` or `build/` is content and never listed. Outside git, only unambiguous names (`node_modules`, `.venv`, `.next` and the like) are; `build`, `dist`, `out` and `vendor` may be the only copy. A folder holding a git checkout (pip `-e` sources in `.venv/src`) is held.
 - **Worktree rows (git)**: clean, not in use or locked, on origin or merged per `git ls-remote` (a squash merge counts when `gh` finds a merged PR whose head is this commit), and every ignored file except provable build output (`.env`, `.data/`, `dist/`) is identical to the main checkout's copy. Origin unreachable means no git row.
-- **rec**: every Q row except rebuild rows of active projects and worktrees with a recent session. Never R rows.
+- **rec**: every Q row except rebuild rows of active projects, repos nested inside another repo (an SDK's toolchain checkout reads idle while in daily use), and worktrees with a recent session. Never R rows.
 
 ## 3. Delete
 
