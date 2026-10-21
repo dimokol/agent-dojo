@@ -1,6 +1,6 @@
 ## Product copy voice
 
-The writing-tone block (https://github.com/dimokol/agent-workbench/blob/main/blocks/writing-tone.md) sets the
+The writing-tone block (https://github.com/dimokol/agent-dojo/blob/main/blocks/writing-tone.md) sets the
 base rules for how an agent writes. A product's user-facing copy also needs a voice of its own,
 tuned to who reads it and what they need at each moment. This is one worked example, for a service
 product used by a broad, non-technical audience. Run the same method on your own product and keep

@@ -1,17 +1,22 @@
-# agent-workbench
+# agent-dojo
 
-[![test](https://github.com/dimokol/agent-workbench/actions/workflows/test.yml/badge.svg)](https://github.com/dimokol/agent-workbench/actions/workflows/test.yml)
+[![test](https://github.com/dimokol/agent-dojo/actions/workflows/test.yml/badge.svg)](https://github.com/dimokol/agent-dojo/actions/workflows/test.yml)
 
-Run several Claude Code or Codex agents on one laptop. These plugins stop an agent from merging a
-PR you didn't approve or starting a second test run on a machine that's already struggling, and
-give agents in different terminals a room to settle an API between themselves.
+Plugins, skills and habits that help you do professional-grade work with coding agents.
 
-![A PR merge refused by git-guardrails, an e2e run refused by machine-pressure while memory is red, and two agents agreeing on a field name over agent-chat](docs/demo/demo.gif)
+Taken straight out of the personal workflows I apply daily in my professional work as a web and
+game developer. In Claude Code, hooks stop an agent from merging a PR you didn't approve or
+starting a second test run on a machine that's already struggling. agent-chat gives agents in
+different terminals, Claude Code or Codex, a room to coordinate and cooperate between themselves
+without requiring a middleman. The skills, which also work in Codex, carry the review and verify
+habits that keep agent work up to your standard.
+
+![machine-pressure's statusline in the red and an e2e run refused, two agents settling an API field over agent-chat, and a PR merge and a push to main refused by git-guardrails](docs/demo/demo.gif)
 
 ## Install
 
 ```bash
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install starter@dimokol
 ```
 
@@ -20,7 +25,7 @@ agent-chat, which needs Node 24.15+, the native Claude Code install, one setting
 lines in your `CLAUDE.md` (see [its README](plugins/agent-chat)). Claude Code may say some options are "not yet set"; the
 defaults apply. To see one work, ask "run a health check".
 
-Skills only, for Codex and other agents: `npx skills add dimokol/agent-workbench`.
+Skills only, for Codex and other agents: `npx skills add dimokol/agent-dojo`.
 
 ## What it prevents
 
@@ -28,6 +33,8 @@ Skills only, for Codex and other agents: `npx skills add dimokol/agent-workbench
 - Four agents start four test suites, and the laptop swaps until nothing responds.
 - Two agents in two terminals guess the same field name differently.
 - Merged worktrees, idle `node_modules` folders and orphaned dev servers fill the disk.
+- An agent rebuilds something that already merged on the trunk.
+- A PR goes up with review findings nobody applied or answered.
 
 New to running more than one agent? [Running several agents at once](docs/running-several-agents.md)
 is a five-minute read.
@@ -63,10 +70,10 @@ Without the plugin system, `install.sh` copies a part into place and prints any 
 for you to paste:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dimokol/agent-workbench/main/install.sh | bash -s -- --list
-curl -fsSL https://raw.githubusercontent.com/dimokol/agent-workbench/main/install.sh | bash -s -- git-guardrails
+curl -fsSL https://raw.githubusercontent.com/dimokol/agent-dojo/main/install.sh | bash -s -- --list
+curl -fsSL https://raw.githubusercontent.com/dimokol/agent-dojo/main/install.sh | bash -s -- git-guardrails
 # Codex: copy skills into Codex's folder
-curl -fsSL https://raw.githubusercontent.com/dimokol/agent-workbench/main/install.sh | SKILLS_DIR=~/.codex/skills bash -s -- worktree-hygiene
+curl -fsSL https://raw.githubusercontent.com/dimokol/agent-dojo/main/install.sh | SKILLS_DIR=~/.codex/skills bash -s -- worktree-hygiene
 ```
 
 In Codex the skills and agent-chat work; hooks are Claude Code only.
@@ -81,7 +88,7 @@ Tools that fit with these parts. Linked, not copied.
 | [mattpocock/skills](https://github.com/mattpocock/skills): grilling, diagnosing-bugs | Sharp questions before building, a debug loop that starts from a failing repro | `claude plugin install mattpocock-skills`, or one skill: `npx skills add mattpocock/skills --skill grilling` |
 | [pstack](https://github.com/cursor/plugins/tree/main/pstack): unslop, blast-radius, show-me-your-work | Cuts AI tells from writing, finds what a change could break, keeps a decision log | `npx skills add https://github.com/cursor/plugins/tree/main/pstack --skill unslop -a claude-code` (Cursor: `/add-plugin pstack`) |
 | [ccstatusline](https://www.npmjs.com/package/ccstatusline) | A configurable statusline; machine-pressure ships widgets for it | `npm install -g ccstatusline` |
-| [claude-notifications](https://github.com/dimokol/claude-notifications) (same author) | A sound and an OS banner when a Claude Code session in a VS Code terminal finishes or needs you. On macOS and Windows a click jumps to that window and terminal tab. | [VS Code marketplace](https://marketplace.visualstudio.com/items?itemName=dimokol.claude-notifications) |
+| [claude-notifications](https://github.com/dimokol/claude-notifications) (from me as well!) | A sound and an OS banner when a Claude Code session in a VS Code terminal finishes or needs you. On macOS and Windows a click jumps to that window and terminal tab. | [VS Code marketplace](https://marketplace.visualstudio.com/items?itemName=dimokol.claude-notifications) |
 
 ## Credits
 

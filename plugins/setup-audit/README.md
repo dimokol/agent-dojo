@@ -5,7 +5,7 @@ A weekly check of your Claude Code setup. It reads new changelog entries, diffs 
 ## Install
 
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install setup-audit@dimokol
 ```
 

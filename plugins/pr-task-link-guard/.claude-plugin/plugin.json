@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Refuses gh pr create unless the PR body links a task on your task board.",
   "author": { "name": "dimokol" },
-  "repository": "https://github.com/dimokol/agent-workbench",
+  "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
   "keywords": ["github", "pull-requests", "hooks", "task-tracking", "multi-agent"],
   "userConfig": {

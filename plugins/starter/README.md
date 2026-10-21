@@ -5,7 +5,7 @@ worktree-hygiene and agent-chat. It has no code of its own.
 
 ## Install
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install starter@dimokol
 ```
 

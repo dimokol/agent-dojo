@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install parts of dimokol/agent-workbench without the Claude Code plugin system: for Codex, other agents,
+# Install parts of dimokol/agent-dojo without the Claude Code plugin system: for Codex, other agents,
 # or people who wire hooks by hand. With Claude Code plugins, use
 # `claude plugin install <part>@dimokol` instead.
 #
@@ -13,7 +13,7 @@
 # prints the settings snippet to paste. It never edits your settings files.
 set -euo pipefail
 
-REPO="dimokol/agent-workbench"
+REPO="dimokol/agent-dojo"
 REF="${REPO_REF:-main}"
 SKILLS_DIR="${SKILLS_DIR:-$HOME/.claude/skills}"
 PARTS_DIR="${PARTS_DIR:-$HOME/.claude/parts}"

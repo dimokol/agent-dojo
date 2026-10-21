@@ -4,7 +4,7 @@ A read-only audit you run at session start: free disk, worktrees whose PR is mer
 
 ## Install
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install worktree-hygiene@dimokol
 ```
 

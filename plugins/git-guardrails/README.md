@@ -5,7 +5,7 @@ Your agents can't merge PRs, push to protected branches, delete remote branches 
 A `PreToolUse` hook reads each Bash command the way a shell would (quotes, line continuations, `$(...)`, heredocs, `sh -c`) and denies the risky ones with a reason the agent can act on. Treat it as a speed bump against mistakes, and don't rely on it as a sandbox: a script or a git alias goes unseen. It reads a branch name from a variable only when `NAME=value` or `export NAME=value` set it earlier in the same command; one set through `declare`, `read`, `+=`, a `for` loop or a subshell goes unseen too. Turn on `strict` if you can: the agent then has to ask before anything leaves your machine.
 
 ## Install
-    claude plugin marketplace add dimokol/agent-workbench
+    claude plugin marketplace add dimokol/agent-dojo
     claude plugin install git-guardrails@dimokol
 
 Without the plugin system: clone the repo and add `plugins/git-guardrails/hooks/git-guardrails.sh` as a `command` hook under `PreToolUse` with matcher `Bash` in `~/.claude/settings.json`. Set options through that file's `env` block.

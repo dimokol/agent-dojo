@@ -5,7 +5,7 @@
 A `PreToolUse` hook on Bash. The link passes when it appears anywhere in the command (an inline `--body`, or a heredoc that writes the body file in the same command) or in the file passed to `--body-file` or read by `--body "$(cat body.md)"`, relative to the session's working directory (`$PWD` and `$HOME` in the path are fine). The deny message tells the agent to find or create the task, add the link and try again. It does nothing until you set `task_link_pattern`, and says so once per session.
 
 ## Install
-    claude plugin marketplace add dimokol/agent-workbench
+    claude plugin marketplace add dimokol/agent-dojo
     claude plugin install pr-task-link-guard@dimokol
 
 Without the plugin system: clone the repo and add `plugins/pr-task-link-guard/hooks/pr-task-link-guard.sh` as a `command` hook under `PreToolUse` with matcher `Bash` in `~/.claude/settings.json`. Set options through that file's `env` block.

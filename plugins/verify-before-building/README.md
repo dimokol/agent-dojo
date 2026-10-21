@@ -4,7 +4,7 @@ Before a branch is created, the agent fetches and checks whether the trunk alrea
 
 ## Install
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install verify-before-building@dimokol
 ```
 

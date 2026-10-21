@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "description": "A one-line nudge to compact or start fresh when a session's context passes 250k, 400k and 600k tokens, or after an hour idle at 150k or more.",
   "author": { "name": "dimokol" },
-  "repository": "https://github.com/dimokol/agent-workbench",
+  "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
   "keywords": ["hooks", "context", "tokens", "compact", "cost"],
   "userConfig": {

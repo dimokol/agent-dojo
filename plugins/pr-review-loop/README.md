@@ -4,7 +4,7 @@ Run `/pr-review-loop:pr-review-loop 12 14` and it asks the reviewer once, fixes 
 
 ## Install
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install pr-review-loop@dimokol
 ```
 

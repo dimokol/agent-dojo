@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Stops agents from merging PRs, pushing to protected branches, deleting remote branches or destroying git history unless you said so.",
   "author": { "name": "dimokol" },
-  "repository": "https://github.com/dimokol/agent-workbench",
+  "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
   "keywords": ["git", "github", "hooks", "guardrails", "pull-requests", "multi-agent"],
   "userConfig": {
