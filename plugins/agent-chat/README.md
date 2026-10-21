@@ -9,7 +9,7 @@ messages between terminals. Mail for a closed session waits until it's back.
 ## Install
 
 ```bash
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install agent-chat@dimokol
 ```
 
@@ -64,8 +64,8 @@ Codex doesn't load Claude Code plugins, so it runs the server from a clone, kept
 folder:
 
 ```bash
-git clone https://github.com/dimokol/agent-workbench ~/.local/share/agent-workbench
-cd ~/.local/share/agent-workbench/plugins/agent-chat && npm ci --ignore-scripts
+git clone https://github.com/dimokol/agent-dojo ~/.local/share/agent-dojo
+cd ~/.local/share/agent-dojo/plugins/agent-chat && npm ci --ignore-scripts
 ```
 
 Then in `~/.codex/config.toml`, with your home folder in the path:
@@ -75,7 +75,7 @@ thread_unload_delay_secs = 0
 
 [mcp_servers.agent_chat]
 command = "sh"
-args = ["/Users/you/.local/share/agent-workbench/plugins/agent-chat/server/start.sh"]
+args = ["/Users/you/.local/share/agent-dojo/plugins/agent-chat/server/start.sh"]
 default_tools_approval_mode = "approve"
 ```
 

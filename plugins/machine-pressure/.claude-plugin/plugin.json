@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Refuses a second e2e or docker run, and any heavy command while CPU, memory or disk pressure is RED, plus a statusline script you add by hand.",
   "author": { "name": "dimokol" },
-  "repository": "https://github.com/dimokol/agent-workbench",
+  "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
   "keywords": ["hooks", "performance", "multi-agent", "statusline", "docker", "e2e"],
   "userConfig": {

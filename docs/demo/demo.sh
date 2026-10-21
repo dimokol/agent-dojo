@@ -5,7 +5,7 @@
 #   caption N     clears the screen and prints scene N's one-line caption
 #   pretooluse    runs the plugins' real PreToolUse hooks on a Bash command
 #   pressure.sh   the real machine-pressure probe, reading fixtures/red-machine
-#   two-agents    scene 3: two agents talk through the real agent-chat server
+#   two-agents    scene 2: two agents talk through the real agent-chat server
 # The plugins come from the checkout two folders up; set DEMO_PLUGINS to use another.
 
 DEMO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -13,7 +13,7 @@ export DEMO_PLUGINS=${DEMO_PLUGINS:-$(cd "$DEMO_DIR/../../plugins" && pwd)}
 node_dir=$(dirname "$(command -v node)")
 
 tmp_base=${TMPDIR:-/tmp}
-DEMO_SANDBOX=$(mktemp -d "${tmp_base%/}/agent-workbench-demo.XXXXXX")
+DEMO_SANDBOX=$(mktemp -d "${tmp_base%/}/agent-dojo-demo.XXXXXX")
 mkdir -p "$DEMO_SANDBOX/home" "$DEMO_SANDBOX/tmp" "$DEMO_SANDBOX/plugin-data" "$DEMO_SANDBOX/chat" "$DEMO_SANDBOX/shop"
 # agent-chat refuses a chat folder other users can read.
 chmod 700 "$DEMO_SANDBOX/chat"
@@ -41,9 +41,9 @@ PS1='\n\[\e[38;5;245m\]$\[\e[0m\] '
 caption() {
   clear
   case $1 in
-    1) text='git-guardrails: an agent tries to merge a PR and push to main' ;;
-    2) text='machine-pressure: a machine out of RAM (fixture readings)' ;;
-    3) text='agent-chat: two agents in two terminals agree on an API change' ;;
+    1) text='machine-pressure: a machine out of RAM (fixture readings)' ;;
+    2) text='agent-chat: two agents in two terminals agree on an API change' ;;
+    3) text='git-guardrails: an agent tries to merge a PR and push to main' ;;
   esac
   printf '\e[1;38;5;117m# %s\e[0m\n' "$text"
 }

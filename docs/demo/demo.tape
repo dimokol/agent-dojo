@@ -13,7 +13,7 @@ Set Shell bash
 Set FontFamily "Menlo"
 Set FontSize 22
 Set Width 1200
-Set Height 650
+Set Height 480
 Set Padding 24
 Set Theme "GitHub Dark"
 Set WindowBar Colorful
@@ -25,27 +25,9 @@ Set CursorBlink false
 Set WaitPattern /\$ *$/
 Set WaitTimeout 20s
 
-# Scene 1: git-guardrails
+# Scene 1: machine-pressure
 Hide
 Type "source demo.sh && caption 1"
-Enter
-Wait
-Show
-Sleep 700ms
-Type "pretooluse 'gh pr merge 12 --squash'"
-Sleep 250ms
-Enter
-Wait
-Sleep 3s
-Type "pretooluse 'git push origin main'"
-Sleep 250ms
-Enter
-Wait
-Sleep 3.2s
-
-# Scene 2: machine-pressure
-Hide
-Type "caption 2"
 Enter
 Wait
 Show
@@ -61,19 +43,43 @@ Enter
 Wait
 Sleep 3.6s
 
-# Scene 3: agent-chat. two-agents draws the panes, then holds the last frame
-# long after the recording stops.
+# Scene 2: agent-chat. two-agents draws the panes and holds the last frame
+# until Ctrl+C.
 Hide
-Type "caption 3; two-agents"
+Type "caption 2; two-agents"
 Enter
 Wait+Screen /web agent/
 Show
-Wait+Screen /web: Yes/
+Wait+Screen /api: Done/
 Sleep 3.4s
-
 Hide
 Ctrl+C
 Wait
+
+# Scene 3: git-guardrails
+Type "caption 3"
+Enter
+Wait
+Show
+Sleep 700ms
+Type "pretooluse 'gh pr merge 12 --squash'"
+Sleep 250ms
+Enter
+Wait
+Sleep 3s
+Hide
+Type "caption 3"
+Enter
+Wait
+Show
+Sleep 300ms
+Type "pretooluse 'git push origin main'"
+Sleep 250ms
+Enter
+Wait
+Sleep 3.2s
+
+Hide
 Type 'rm -rf "$DEMO_SANDBOX"'
 Enter
 Sleep 200ms

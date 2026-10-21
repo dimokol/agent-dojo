@@ -5,13 +5,13 @@ Frees disk space on a Mac without deleting what a dev server, a test run or anot
 ## Install
 
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install storage-reclaim@dimokol
 ```
 
 Then ask your agent to "free up space". For a better scan, `brew install dua-cli` first.
 
-Codex or without the plugin system: `npx skills add dimokol/agent-workbench` (every skill in the repo), or copy both folders under `skills/` into your skills folder; scan.sh expects disk-map next to it.
+Codex or without the plugin system: `npx skills add dimokol/agent-dojo` (every skill in the repo), or copy both folders under `skills/` into your skills folder; scan.sh expects disk-map next to it.
 
 ## What you get
 

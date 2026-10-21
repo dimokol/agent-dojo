@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "A read-only audit to run at session start: free disk, merged-PR worktrees, idle dependency folders and orphaned dev servers. Proposes removals, never deletes.",
   "author": { "name": "dimokol" },
-  "repository": "https://github.com/dimokol/agent-workbench",
+  "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
   "keywords": ["worktrees", "disk", "cleanup", "audit", "git"],
   "userConfig": {

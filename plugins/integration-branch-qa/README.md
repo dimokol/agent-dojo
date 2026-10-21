@@ -4,7 +4,7 @@ Test several approved PRs at once on one local integration branch and one set of
 
 ## Install
 ```
-claude plugin marketplace add dimokol/agent-workbench
+claude plugin marketplace add dimokol/agent-dojo
 claude plugin install integration-branch-qa@dimokol
 ```
 

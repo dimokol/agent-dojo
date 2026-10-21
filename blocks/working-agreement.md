@@ -68,7 +68,7 @@ the user decide. When you're unsure whether something is in scope, ask in one li
 - Prefer shorter. Go longer only when something needs explaining or important information
   would otherwise be lost.
 - Follow the writing-tone block. If you don't have it, it's at
-  https://github.com/dimokol/agent-workbench/blob/main/blocks/writing-tone.md.
+  https://github.com/dimokol/agent-dojo/blob/main/blocks/writing-tone.md.
 
 ## Honesty over agreement
 

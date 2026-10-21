@@ -1,4 +1,4 @@
-// Scene 3: "api agent" and "web agent" side by side. Each agent starts its own
+// Scene 2: "api agent" and "web agent" side by side. Each agent starts its own
 // copy of the real plugins/agent-chat/server/server.mjs over stdio and calls its
 // tools over MCP. These two are scripted MCP clients, so they join as manual
 // clients and use wait; a real Claude Code or Codex session is woken by the post
@@ -11,8 +11,9 @@ import path from 'node:path'
 
 const SERVER = path.join(process.env.DEMO_PLUGINS, 'agent-chat', 'server', 'server.mjs')
 const ROOM = 'search-api'
-const PROPOSAL = 'Proposing `etaMinutes: number` on Order. OK?'
-const REPLY = 'Yes. I\'ll show it as "about 25 min" on the order card.'
+const PROPOSAL = 'Adding `etaMinutes: number` to Order. OK for the card?'
+const QUESTION = 'No ETA before a courier is assigned. Can it be null?'
+const CONFIRM = 'Done: `etaMinutes: number | null`. Live on /orders.'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -181,19 +182,23 @@ for (const [server, name] of [[api, 'api'], [web, 'web']]) await server.tool('jo
 frame()
 draw()
 
+// api proposes a field, web asks for a change, api ships the changed shape.
 const apiAgent = (async () => {
   await sleep(900)
-  const cursor = await post(left, api, 'api', 'web', PROPOSAL)
+  let cursor = await post(left, api, 'api', 'web', PROPOSAL)
   await sleep(450)
-  await wait(left, api, 'api', cursor)
+  cursor = await wait(left, api, 'api', cursor)
+  await sleep(900)
+  await post(left, api, 'api', 'web', CONFIRM)
 })()
 
 const webAgent = (async () => {
   await sleep(350)
-  const cursor = await wait(right, web, 'web', 0)
+  await wait(right, web, 'web', 0)
   await sleep(900)
-  await post(right, web, 'web', 'api', REPLY)
-  return cursor
+  const cursor = await post(right, web, 'web', 'api', QUESTION)
+  await sleep(450)
+  await wait(right, web, 'web', cursor)
 })()
 
 await Promise.all([apiAgent, webAgent])

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Takes open GitHub PRs to approved and mergeable: asks the reviewer once, fixes or answers each finding, reruns your checks, merges only when you ask.",
   "author": { "name": "dimokol" },
-  "repository": "https://github.com/dimokol/agent-workbench",
+  "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
   "keywords": ["pull-requests", "code-review", "github", "worktrees", "agents"],
   "userConfig": {

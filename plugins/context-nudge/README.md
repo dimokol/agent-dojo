@@ -4,7 +4,7 @@ A one-line nudge when a session's context passes 250k, 400k and 600k tokens, and
 
 ## Install
 
-    claude plugin marketplace add dimokol/agent-workbench
+    claude plugin marketplace add dimokol/agent-dojo
     claude plugin install context-nudge@dimokol
 
 Without the plugin system: add `hooks/context-nudge.sh` as a `UserPromptSubmit` hook in `settings.json`, with options in `env`.

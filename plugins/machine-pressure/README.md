@@ -4,7 +4,7 @@ A gate refuses a second e2e or docker run, and any heavy command while CPU, memo
 
 ## Install
 
-    claude plugin marketplace add dimokol/agent-workbench
+    claude plugin marketplace add dimokol/agent-dojo
     claude plugin install machine-pressure@dimokol
 
 Without the plugin system: add `hooks/heavy-op-gate.sh` as a `PreToolUse` hook (matcher `Bash`) in `settings.json`.
@@ -13,7 +13,7 @@ Without the plugin system: add `hooks/heavy-op-gate.sh` as a `PreToolUse` hook (
 
 A plugin can't set the statusline, so copy the probe, then point `statusLine` at it:
 
-    mkdir -p ~/.claude/scripts && curl -fsSL https://raw.githubusercontent.com/dimokol/agent-workbench/main/plugins/machine-pressure/scripts/pressure.sh -o ~/.claude/scripts/pressure.sh && chmod +x ~/.claude/scripts/pressure.sh
+    mkdir -p ~/.claude/scripts && curl -fsSL https://raw.githubusercontent.com/dimokol/agent-dojo/main/plugins/machine-pressure/scripts/pressure.sh -o ~/.claude/scripts/pressure.sh && chmod +x ~/.claude/scripts/pressure.sh
     { "statusLine": { "type": "command", "command": "~/.claude/scripts/pressure.sh --statusline" } }
 
 Other modes: `--json` has the plain values for scripts (`"level":"AMBER"`, `"ram_pct":71`). `--field cpu|ram|swap|load|disk|level` prints one colored display segment such as `RAM 71%` or `pressure AMBER`; set `NO_COLOR=1` to drop the color codes. Level is OK, AMBER, RED, or UNKNOWN when nothing can be read (never RED). Readings are cached 4 seconds per folder.
