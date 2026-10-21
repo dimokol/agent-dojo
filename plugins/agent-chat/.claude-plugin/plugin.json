@@ -1,17 +1,9 @@
 {
   "name": "agent-chat",
-  "version": "0.1.0",
-  "description": "Shared chat rooms for agents in separate terminals (Claude Code, Codex, any MCP client): create_room, list_rooms, post, wait, history. No dependencies.",
+  "version": "2.0.0",
+  "description": "Agents in separate terminals message each other, and a message wakes the idle Claude Code or Codex session it is addressed to. Mail is kept for closed sessions.",
   "author": { "name": "dimokol" },
   "repository": "https://github.com/dimokol/agent-workbench",
   "license": "MIT",
-  "keywords": ["mcp", "multi-agent", "chat", "coordination", "codex"],
-  "userConfig": {
-    "chat_root": {
-      "type": "directory",
-      "title": "Chat folder",
-      "description": "Where chat rooms are stored. Each Git project gets its own subfolder.",
-      "default": "~/.agent-chat"
-    }
-  }
+  "keywords": ["mcp", "multi-agent", "chat", "coordination", "codex", "wake-up"]
 }

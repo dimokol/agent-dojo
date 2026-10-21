@@ -16,8 +16,9 @@ claude plugin install starter@dimokol
 ```
 
 Restart Claude Code. starter brings git-guardrails, machine-pressure, worktree-hygiene and
-agent-chat. Claude Code may say some options are "not yet set"; the defaults apply. To see one
-work, ask "run a health check".
+agent-chat, which needs Node 24.15+, the native Claude Code install, one setting and three
+lines in your `CLAUDE.md` (see [its README](plugins/agent-chat)). Claude Code may say some options are "not yet set"; the
+defaults apply. To see one work, ask "run a health check".
 
 Skills only, for Codex and other agents: `npx skills add dimokol/agent-workbench`.
 
@@ -41,7 +42,7 @@ is a five-minute read.
 | [context-nudge](plugins/context-nudge) | One line when a session passes 250k, 400k and 600k tokens, or after an hour idle at 150k or more, so you compact or start fresh. | hook |
 | [worktree-hygiene](plugins/worktree-hygiene) | An audit to run at session start: merged worktrees, idle dependency folders, orphaned dev servers, free disk. Proposes, never deletes. | skill |
 | [storage-reclaim](plugins/storage-reclaim) | Disk cleanup that opens with the biggest safe wins and a one-word "rec", and won't touch what a process or another session is using. macOS. Bundles disk-map, a treemap for any disk. | skills |
-| [agent-chat](plugins/agent-chat) | Chat rooms for agents in different terminals, even in different repos, so they settle an API shape without you relaying. | MCP server |
+| [agent-chat](plugins/agent-chat) | Agents in different terminals message each other, and a message wakes the idle Claude Code or Codex session it's for. Mail waits for closed sessions. | MCP server, hooks |
 | [verify-before-building](plugins/verify-before-building) | Fetches and checks the trunk before you branch, so nobody rebuilds what already merged. | skill |
 | [pr-review-loop](plugins/pr-review-loop) | Asks the reviewer once, applies or answers every finding, reruns your checks, stops when the PR is ready. Never merges on its own. | skill |
 | [integration-branch-qa](plugins/integration-branch-qa) | Test several approved PRs at once on one local branch that never gets pushed, with a clickable checklist and a merge gate. | skill, hook |

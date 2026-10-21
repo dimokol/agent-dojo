@@ -57,10 +57,24 @@ jobs:
             (cd "plugins/$1" && eval "$2") || { echo "::error::$1 failed"; fail=1; }
             echo "::endgroup::"
           }
-          for p in agent-chat git-guardrails pr-task-link-guard; do suite "$p" 'node --test tests/*.test.mjs'; done
+          for p in git-guardrails pr-task-link-guard; do suite "$p" 'node --test tests/*.test.mjs'; done
           for p in context-nudge integration-branch-qa machine-pressure pr-review-loop; do suite "$p" 'bash tests/run.sh'; done
           suite storage-reclaim 'bash tests/disk-map.sh'
           exit $fail
+
+      # agent-chat needs Node 24.15+ and is built for macOS (ps, lsof, Unix sockets); its README
+      # marks Linux untested.
+      - name: Node 24 for agent-chat (macOS only)
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24.15'
+
+      - name: Test agent-chat (macOS only)
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        working-directory: plugins/agent-chat
+        # The suite tests the version gate, which the plugin ships switched off.
+        run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --test --test-concurrency=2 server/*.test.mjs
 
       - name: Test install.sh
         if: ${{ !cancelled() }}

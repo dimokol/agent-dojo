@@ -1,8 +1,9 @@
 // Scene 3: "api agent" and "web agent" side by side. Each agent starts its own
-// copy of the real plugins/agent-chat/server/server.mjs over stdio, the way two
-// Claude Code sessions would, and calls its post and wait tools over MCP. The two
-// servers share nothing but the AGENT_CHAT_ROOT folder, so the web agent's wait
-// returns only when the api agent's post lands on disk, and the other way round.
+// copy of the real plugins/agent-chat/server/server.mjs over stdio and calls its
+// tools over MCP. These two are scripted MCP clients, so they join as manual
+// clients and use wait; a real Claude Code or Codex session is woken by the post
+// instead. The two servers share nothing but the AGENT_CHAT_ROOT folder, so the web
+// agent's wait returns only when the api agent's post lands on disk, and back.
 // The panes are drawn here (no tmux needed). Every message and cursor shown comes
 // from the servers' replies; only the message bodies the agents send are scripted.
 import { spawn } from 'node:child_process'
@@ -176,6 +177,7 @@ process.on('SIGTERM', shutdown)
 
 await Promise.all(servers.map((s) => s.init()))
 await api.tool('create_room', { title: 'Search API', room: ROOM })
+for (const [server, name] of [[api, 'api'], [web, 'web']]) await server.tool('join_room', { room: ROOM, agent: name, session: { id: name, runtime: 'manual' } })
 frame()
 draw()
 

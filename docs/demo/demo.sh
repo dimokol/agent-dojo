@@ -15,6 +15,8 @@ node_dir=$(dirname "$(command -v node)")
 tmp_base=${TMPDIR:-/tmp}
 DEMO_SANDBOX=$(mktemp -d "${tmp_base%/}/agent-workbench-demo.XXXXXX")
 mkdir -p "$DEMO_SANDBOX/home" "$DEMO_SANDBOX/tmp" "$DEMO_SANDBOX/plugin-data" "$DEMO_SANDBOX/chat" "$DEMO_SANDBOX/shop"
+# agent-chat refuses a chat folder other users can read.
+chmod 700 "$DEMO_SANDBOX/chat"
 trap 'rm -rf "$DEMO_SANDBOX"' EXIT
 
 export HOME=$DEMO_SANDBOX/home
@@ -25,8 +27,10 @@ export PATH="$DEMO_DIR/bin:$node_dir:/usr/bin:/bin:/usr/sbin:/sbin"
 # statusline read the same fixture.
 export PRESSURE_PROBE=$DEMO_DIR/bin/pressure.sh
 export AGENT_CHAT_ROOT=$DEMO_SANDBOX/chat
-export AGENT_CHAT_PROJECT=shop
-unset PROMPT_COMMAND CLAUDE_PLUGIN_ROOT CLAUDE_PLUGIN_DATA GIT_GUARDRAILS_ALLOW PRESSURE_ALLOW
+# Recorded from inside a Claude Code session, the demo's chat servers would take that session's
+# identity; these scripted agents are manual clients.
+unset PROMPT_COMMAND CLAUDE_PLUGIN_ROOT CLAUDE_PLUGIN_DATA GIT_GUARDRAILS_ALLOW PRESSURE_ALLOW \
+  CLAUDE_CODE_SESSION_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDECODE
 # Plugin settings from the recording machine would change what the hooks say.
 for v in $(env | grep -Eo '^(CLAUDE_PLUGIN_OPTION_|GIT_GUARDRAILS_|MACHINE_PRESSURE_)[A-Z_]*'); do unset "$v"; done
 cd "$DEMO_SANDBOX/shop" || return
