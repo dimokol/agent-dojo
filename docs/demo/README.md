@@ -1,5 +1,9 @@
 # Demo
 
+`agent-chat-wakeup.gif`, at the top of agent-chat's README, is two real Claude Code sessions
+recorded side by side with VHS and sped up while they wait. It isn't scripted, so it isn't
+re-recorded from this folder.
+
 The GIF at the top of the main README is recorded from this folder with
 [VHS](https://github.com/charmbracelet/vhs): run `vhs demo.tape`. It needs `node` and `jq`.
 

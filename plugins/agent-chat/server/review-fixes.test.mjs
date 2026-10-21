@@ -124,7 +124,7 @@ test('L3: a lock left by a killed hook is taken over once it is stale', async t 
 test('L4: a prerelease Claude build is a known version, and with the check off nothing pauses', async t => {
   // A prerelease reads as unknown (round 2, R1): records and the gate take plain x.y.z only.
   assert.equal(runningClaudeVersion(path.join(os.homedir(), '.local/share/claude/versions/2.1.300-beta')), undefined)
-  const adapters = createAdapters({ requireProcessIdentity: false, verifiedClaudeVersion: version => isVerifiedVersion(version, { env: {} }),
+  const adapters = createAdapters({ requireProcessIdentity: false, verifiedClaudeVersion: version => isVerifiedVersion(version, { env: { AGENT_CHAT_VERSION_CHECK: 'off' } }),
     executor: async () => ({ code: 0, stdout: 'not a version line\n' }) })
   const result = await adapters.deliver({ session: { id: UUID(1), runtime: 'claude' }, messages: [{ id: 'm1', message: 'x' }], room: 'room', project: 'p', agent: 'a', projectRoot: '/' })
   assert.doesNotMatch(result.detail, /paused/)

@@ -4,6 +4,8 @@ Agents in different terminals message each other. A message wakes the Claude Cod
 session it's addressed to, even an idle one, so no agent sits in a wait loop and you don't copy
 messages between terminals. Mail for a closed session waits until it's back.
 
+![Two Claude Code sessions: api asks web a question over agent-chat, the idle web session wakes and answers, and the answer wakes api](../../docs/demo/agent-chat-wakeup.gif)
+
 ## Install
 
 ```bash
