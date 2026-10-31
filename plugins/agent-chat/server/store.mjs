@@ -235,7 +235,7 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     restoreClaude(observation, isLive) {
       const session=observation?.session
       if(session?.runtime!=='claude'||!session.conversationId||typeof isLive!=='function') throw new Error('Validated Claude lifecycle observation required')
-      return transact(state=>restoreClaudeMemberships(state,observation,{isLive,preserveUnconfirmed}))
+      return transact(state=>restoreClaudeMemberships(state,observation,{isLive,preserveUnconfirmed,now:now(),records}))
     },
     chooseDefaultName(session,suggested,nativeName) {
       return transact(state=>{

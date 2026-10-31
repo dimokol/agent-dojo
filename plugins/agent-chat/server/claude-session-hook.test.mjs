@@ -170,3 +170,14 @@ test('an unsupported Claude install is named plainly, without the rejoin advice'
   assert.match(registrationFailureLine('install'),/^Agent-chat needs the native Claude Code install \(~\/\.local\/bin\/claude\); this one can't be registered or woken\./)
   assert.doesNotMatch(registrationFailureLine('install'),/join_room/)
 })
+test('restore tries again while the replaced tab is still running, and keeps what came back',async()=>{
+  const {restoreUntilFree}=await import('./claude-session-hook.mjs')
+  const results=[{restored:[{room:'a',agent:'PM'}],conflicts:[{room:'b',agent:'PM'}]},{restored:[],conflicts:[{room:'b',agent:'PM'}]},{restored:[{room:'b',agent:'PM'}],conflicts:[]}]
+  let calls=0;const sleeps=[]
+  const out=await restoreUntilFree(()=>results[calls++],{sleep:async ms=>{sleeps.push(ms)}})
+  assert.equal(calls,3);assert.deepEqual(sleeps,[750,750])
+  assert.deepEqual(out.restored.map(r=>r.room),['a','b']);assert.deepEqual(out.conflicts,[])
+  let n=0
+  const stuck=await restoreUntilFree(()=>(n++,{restored:[],conflicts:[{room:'b',agent:'PM'}]}),{sleep:async()=>{}})
+  assert.equal(n,8);assert.equal(stuck.conflicts.length,1)
+})
