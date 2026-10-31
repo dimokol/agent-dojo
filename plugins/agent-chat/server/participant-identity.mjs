@@ -104,7 +104,7 @@ export function renameParticipant(state,id,name,{now,unread,source='agent'}={}) 
 // Retarget only unread direct mail. The canonical address and to_id never change.
 export function adoptClosedName(state,session,name,now,records) {
   const owner=state.nameOwners[nameKey(name)], id=participantId(session)
-  if(!owner||owner.participant_id===id||owner.retired_at!==undefined||state.participants[id])return
+  if(!owner||owner.participant_id===id||owner.retired_at!==undefined||state.participants[id]?.name)return
   const old=state.participants[owner.participant_id]
   if(old.name!==name)return
   // Mail in a damaged log can't be moved, so the name isn't taken over until it is repaired.

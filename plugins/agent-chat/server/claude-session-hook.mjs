@@ -57,6 +57,14 @@ export function verificationNotice(getVersion=currentVersion,verified=version=>i
     return [`Agent-chat is checking Claude ${version} once in the background. Failures appear under ${path.join(stateRoot,'verification')} and at the next prompt.`]
   }catch {return ['Agent-chat registration is queued. The Claude version check is unavailable; review automatic verification separately.']}
 }
+// A tab reopened under another account can start before the tab it replaces
+// has exited, and a live owner is a conflict. Try again while one remains, so
+// the rooms come back once the old process is gone. The worker runs detached.
+export async function restoreUntilFree(attempt,{tries=8,delayMs=750,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
+  let result=attempt();const restored=[...result.restored]
+  for(let i=1;i<tries&&result.conflicts.length;i++){await sleep(delayMs);result=attempt();restored.push(...result.restored)}
+  return {restored,conflicts:result.conflicts}
+}
 async function restore(task) {
   const session=validateSession(task.observation.session)
   // null: this conversation is no longer current in that tab, nothing to restore.
@@ -65,7 +73,7 @@ async function restore(task) {
   try {scheduleVerification({version:currentVersion(),stateRoot,cwd:task.projectRoot,profileHome:session.profileHome})} catch {}
   const store=createStore({root:chatRoot,stateRoot,projectRoot:task.projectRoot})
   // Only the tab's own observed version is recorded; delivery reads the live process otherwise.
-  const result=store.restoreClaude({...task.observation,session},isProcessLive)
+  const result=await restoreUntilFree(()=>store.restoreClaude({...task.observation,session},isProcessLive))
   const controller=createController({store,adapters:createAdapters({stateRoot})})
   await Promise.all([...new Set(result.restored.map(row=>row.room))].map(room=>controller.dispatch(room)))
 }

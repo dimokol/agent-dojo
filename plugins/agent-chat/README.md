@@ -50,6 +50,10 @@ For a Claude Code or Codex session, joining a room that doesn't exist yet create
   it. A broadcast (`to: "all"`) waits in inboxes unless it's `urgent`.
 - `/resume`, or `claude --resume` and `--continue` after a restart, bring a conversation back into
   its rooms. `/clear` and a new session start with none.
+- That also works across Claude accounts (`CLAUDE_CONFIG_DIR`s) whose `projects/` folders are one
+  folder (a symlink), since then they hold the same conversations: resume on the other account and
+  the session keeps its name, its rooms and its waiting mail. Accounts with separate `projects/`
+  folders stay apart. If the old tab is still closing, the rooms follow within a few seconds.
 - One conversation open in two tabs: the first keeps its rooms. The second takes them with
   `join_room`, or gets them at its first chat call after the first tab closes; mail that arrives
   in between waits in the inbox without a ring.
