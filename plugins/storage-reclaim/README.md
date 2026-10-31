@@ -26,18 +26,19 @@ Q3     1.4  git       worktree ~/code/app-wt/fix-login (merged, clean)
 Q4     0.6  none      2 old claude CLI versions
 back: none = junk · regrows = on its own · rebuild = install/build · download = on next use · git = from origin
 rec = Q1 Q2 Q3 Q4 · 38.2 → ~49.5 GB free
-held: 3 in use · 1 never-touch
+held: 3 in use 2.4 GB · 1 never-touch 0.5 GB · 1 app running 0.8 GB
 ```
 
-Reply `rec`, or the IDs you want. The agent deletes those, then shows free space before and after. Details follow the table for anyone who wants them: worktrees, projects, what grew since the last run, the system side, and files that may be the only copy.
+Reply `rec`, or the IDs you want. The agent deletes those through `recheck.sh`, which checks each path again right before it goes, then shows what each one freed and free space before and after. Details follow the table for anyone who wants them: worktrees, projects, what grew since the last run, the system side, and files that may be the only copy.
 
 What keeps it safe:
 - **In use.** Anything a process has open or runs inside is held back, and so is a project a command line names (`python app1/server.py` from the parent folder).
-- **Other sessions.** Locked worktrees, lock folders and session worktree folders are never proposed.
+- **Other sessions.** Locked worktrees, lock folders and session worktree folders are never proposed. A session holding a build has nothing open, so you can mark its cache `ask` in `decisions.tsv`: the row stays out of rec and names the session to ask first. Cargo build caches are `rebuild` rows and stay out of rec too.
+- **Running apps.** A browser keeps its cache files closed between page loads. `apps.tsv` maps a cache to its app, and the cache is held while the app runs.
 - **Idle means idle.** A project's installs only go when it has had no commit, edit or Claude Code or Codex session for 7 days.
 - **Worktrees.** Proposed only when clean, on origin or merged (squash merges too, with `gh`), and their `.env`, local databases and other ignored files match the main checkout. `git worktree remove` is never forced.
-- **Content.** Archives, installers, anything git tracks, generic `build`/`dist` folders outside git, and folders holding a git checkout never get an ID.
-- **Your call.** Nothing is deleted without your reply. Keep-lists in `~/.config/storage-reclaim/` remember what you said to keep.
+- **Content.** Archives, installers, anything git tracks, generic `build`/`dist` folders outside git, and folders holding a git checkout never get an ID. Big gitignored or non-git folders under your project roots (renders, run logs) are listed for you to judge.
+- **Your call.** Nothing is deleted without your reply. Keep-lists in `~/.config/storage-reclaim/` (`never-touch.txt`, `decisions.tsv`, `apps.tsv`) remember what you said to keep.
 
 disk-map, bundled, is the read-only part: a treemap page and a text summary for any folder or drive, on macOS, Linux or Windows, plus a diff of what grew between two scans. Ask "what's taking space on my external drive".
 

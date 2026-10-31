@@ -1,8 +1,11 @@
 # What you decided on past runs. One row per item, tab-separated, newest last.
 # decision: keep or user handles (not proposed again before the recheck date),
+#   ask (another agent session owns it: the row stays out of rec and says whom to ask;
+#   put the session's name first in the note, then a colon),
 #   removed (history only; something that regrows is proposed again on its merits).
 # recheck: YYYY-MM-DD, never, or free text (anything but a past date keeps holding).
 # path: the folder or file, ~ allowed. Rows without a real path are notes for the agent.
 #
 # 2026-01-15	~/Library/Application Support/SomeApp	keep	never	used daily
+# 2026-01-15	~/Library/Caches/tool-run/target	ask	never	build-session: its cargo cache; ask in agent-chat
 date	path	decision	recheck	note

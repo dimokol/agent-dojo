@@ -1,6 +1,6 @@
 {
   "name": "storage-reclaim",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Disk cleanup for macOS that leads with a ranked table of quick wins, skips anything a process or another agent session is using, and deletes only what you approve. Bundles disk-map, a read-only treemap and what-grew diff for any disk.",
   "author": { "name": "dimokol" },
   "repository": "https://github.com/dimokol/agent-dojo",
