@@ -1,0 +1,16 @@
+# Caches an app keeps using while it runs. While the app runs, scan.sh holds the folder ("app running")
+# and recheck.sh refuses to delete it. One per line: the folder (a name under ~/Library/Caches, or a ~ path),
+# a tab, the app bundle as it appears in the process path. A process started with --user-data-dir
+# (a test or agent browser) keeps its cache in that folder and does not count.
+BraveSoftware	Brave Browser.app
+Google	Google Chrome.app
+Microsoft Edge	Microsoft Edge.app
+company.thebrowser.Browser	Arc.app
+Mozilla	Firefox.app
+Mozilla	Thunderbird.app
+Firefox	Firefox.app
+Thunderbird	Thunderbird.app
+com.apple.Safari	Safari.app
+com.microsoft.VSCode	Visual Studio Code.app
+com.tinyspeck.slackmacgap	Slack.app
+com.spotify.client	Spotify.app

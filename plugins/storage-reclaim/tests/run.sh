@@ -113,6 +113,25 @@ node_project "$D/sdk/upstream/tool"
 # and an idle project whose two build folders share hardlinks (one row, counted once).
 node_project "$D/linked"; mkdir -p "$D/linked/.next"; mb "$D/linked/node_modules/big" 150; ln "$D/linked/node_modules/big" "$D/linked/.next/big"
 
+# A tool's folder in Caches: two cargo targets, a sandbox holding a test browser profile, a shim the
+# tool needs and a state folder. It isn't one app's cache, so each child is judged on its own.
+for t in target target-ui; do mkdir -p "$C/tool-run/$t/debug"; : > "$C/tool-run/$t/CACHEDIR.TAG"; mb "$C/tool-run/$t/debug/deps" 1; done
+mkdir -p "$C/tool-run/sandbox/T1/brave-profile/Default"; echo s > "$C/tool-run/sandbox/T1/brave-profile/Local State"; mb "$C/tool-run/sandbox/T1/big" 1
+mb "$C/tool-run/shim/claude" 1; mb "$C/tool-run/state/db" 1
+# An app's cache while the app runs (apps.tsv), with no file open in it; downloaded app updates.
+mb "$C/FakeBrowser/Default/Cache/x" 1
+mb "$C/dev.probe/org.sparkle-project.Sparkle/update.zip" 2; echo x > "$C/dev.probe/Cache.db"; mb "$C/Mozilla/updates/x" 2
+# Gradle re-downloads; uv keeps bare git repos of its own, which are no user checkout.
+mb "$fake/.gradle/caches/modules-2/x" 1
+mkdir -p "$fake/.cache/uv/git-v0/db/abc/.git"; echo r > "$fake/.cache/uv/git-v0/db/abc/.git/HEAD"; mb "$fake/.cache/uv/big" 1
+# Codex releases two profiles share through a symlink: the newest, the current one and a superseded one.
+X=$fake/.codex-a/packages/standalone/releases; for v in 0.1.0 0.2.0 0.3.0; do mb "$X/$v/bin" 1; done
+ln -s "$X/0.2.0" "$fake/.codex-a/packages/standalone/current"; mkdir -p "$fake/.codex-b"; ln -s "$fake/.codex-a/packages" "$fake/.codex-b/packages"
+# A project an agent CLI sits in, with build output and gitignored renders nothing rebuilds.
+mkdir -p "$D/agentproj"; echo '{}' > "$D/agentproj/package.json"; printf 'node_modules/\n.next/\nrenders/\n' > "$D/agentproj/.gitignore"
+g -C "$D/agentproj" init -q && g -C "$D/agentproj" add . && g -C "$D/agentproj" commit -qm init
+mb "$D/agentproj/.next/cache/x" 1; mb "$D/agentproj/renders/r1" 3
+
 # Everything old enough to count as idle.
 find "$fake" -exec touch -h -t "$stamp" {} + 2>/dev/null
 echo fresh > "$fake/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/x"
@@ -123,6 +142,9 @@ printf '~/Library/Caches/keepme\tthe user said keep\n' > "$conf/never-touch.txt"
 printf '~/Library/Caches/C#tool\tliteral name\n~/Library/Caches/appx/*.db\ta file inside a cache\n' >> "$conf/never-touch.txt"
 printf '~/Documents/ntslash/\ttrailing slash\n~/Dev/code/tool2\tthrough a symlink\n~/Library/Caches/C#t*\tglob with #\n~/Library/Caches/bar (o*\tglob with ( )\n' >> "$conf/never-touch.txt"
 printf 'date\tpath\tdecision\trecheck\tnote\n2026-01-01\t~/Library/Caches/kept-by-decision\tkeep\t2999-01-01\ttest\n2026-01-01\t~/Library/Caches/bar (old)\tkeep\tnever\ttest\n' > "$conf/decisions.tsv"
+printf '~/Library/Caches/tool-run/shim\tthe tool needs it\n' >> "$conf/never-touch.txt"
+printf '2026-01-01\t~/Library/Caches/tool-run/target\task\tnever\tbuild-session: its cargo cache\n' >> "$conf/decisions.tsv"
+printf 'FakeBrowser\tFakeBrowser.app\n' > "$conf/apps.tsv"
 
 # A process sitting in busy-app's root with nothing open under node_modules: the gap lsof alone misses.
 (cd "$D/busy-app" && exec sleep 300) & pids+=($!); disown $!
@@ -131,6 +153,9 @@ printf 'date\tpath\tdecision\trecheck\tnote\n2026-01-01\t~/Library/Caches/kept-b
 (cd "$D/mono" && exec -a npm perl -e 'sleep 300' -- --workspaces run dev) & pids+=($!); disown $!
 (cd "$D/loose" && exec -a npm perl -e 'sleep 300' -- --workspaces run dev) & pids+=($!); disown $!
 (exec -a WiFiCloudAssetsXPCService sleep 300) & pids+=($!); disown $!
+# An agent CLI sitting at a repo root, and a browser app running on its default profile.
+(cd "$D/agentproj" && exec -a claude perl -e 'sleep 300') & pids+=($!); disown $!
+(exec -a "$fake/Apps/FakeBrowser.app/Contents/MacOS/FakeBrowser" perl -e 'sleep 300') & pids+=($!); disown $!
 
 # A simulator runtime no device uses, through a stand-in xcrun.
 mkdir -p "$fake/bin"
@@ -147,7 +172,7 @@ mkdir -p "$fake/cwd"; echo junk > "$fake/cwd/zzz-file"   # a first run must not 
 snapshot() { (cd "$fake" && find . -path ./.config -prune -o -path ./.local -prune -o -print | LC_ALL=C sort && find . -path ./.config -prune -o -path ./.local -prune -o -type f -exec cksum {} + | LC_ALL=C sort); }
 before=$(snapshot)
 
-run() { env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$fake" PATH="$fake/bin:$PATH" STORAGE_RECLAIM_MIN_MB=0 STORAGE_RECLAIM_ROWS=50 \
+run() { env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$fake" PATH="$fake/bin:$PATH" STORAGE_RECLAIM_MIN_MB=0 STORAGE_RECLAIM_ROWS=50 STORAGE_RECLAIM_LOOK_MB=2 \
   STORAGE_RECLAIM_PROJECT_ROOTS="$fake/Documents:$fake/Dev/code" \
   STORAGE_RECLAIM_LOCK_DIR=.locks STORAGE_RECLAIM_WORKTREE_SUFFIX=-worktrees zsh "$scan" "$@" 2>&1; }
 out=$(cd "$fake/cwd" && run); status=$?
@@ -162,6 +187,7 @@ for sec in WORKTREES PROJECTS "SYSTEM SIDE" "NEEDS A LOOK" "HELD BACK" ACTIONS; 
 row() { printf '%s\n' "$out" | sed -n '/^QUICK WINS/,/^back:/p' | grep -F -- "$1"; }
 id_of() { row "$1" | awk '{ print $1 }'; }
 rec=$(printf '%s\n' "$out" | sed -n 's/^rec = \(.*\) · .*/\1/p')
+acts=$(printf '%s\n' "$out" | sed -n '/^=== ACTIONS/,$p')
 
 i=$(id_of 'idle-app'); [ -n "$i" ] && s=ok || s=bad; check "idle project gets a rebuild row" $s
 row 'idle-app' | grep -q 'node_modules, .next' && s=ok || s=bad; check "idle row names node_modules and .next" $s
@@ -188,14 +214,15 @@ check "never-touch hold is named" "$(has 'Caches/keepme  [never-touch]')"
 [ -z "$(id_of 'kept-by-decision')" ] && s=ok || s=bad; check "a keep decision before its recheck is not proposed" $s
 [ -z "$(id_of 'ms-playwright-mcp')" ] && s=ok || s=bad; check "a browser profile is not proposed as a cache" $s
 [ -z "$(id_of 'photos.zip')" ] && s=ok || s=bad; check "an archive never gets an ID" $s
-check "the archive is counted under needs a look" "$(has 'needs a look: 1 files')"
+case "$(printf '%s\n' "$out" | sed -n '/^=== NEEDS A LOOK/,/^===/p')" in *photos.zip*) s=ok;; *) s=bad;; esac; check "the archive is listed under needs a look" $s
+check "needs a look is counted on the held line" "$(has '· needs a look: ')"
 
 r=$(id_of 'iOS 18.3.1 simulator runtime'); [ -n "$r" ] && s=ok || s=bad; check "an unused simulator runtime gets a download row" $s
 check "runtime action is simctl runtime delete" "$(has 'xcrun simctl runtime delete AAAA-1111')"
 
 b=$(id_of 'ms-playwright: 1 browser build'); [ -n "$b" ] && s=ok || s=bad; check "playwright browser builds get a row" $s
-case "$out" in *"rm -rf $C/ms-playwright/chromium-1200"*) s=ok;; *) s=bad;; esac; check "the row deletes only the browser build" $s
-case "$out" in *"rm -rf $C/ms-playwright "*|*"rm -rf $C/ms-playwright"$'\n'*|*"ms-playwright/mcp-chrome-profile "*) s=bad;; *) s=ok;; esac
+case "$acts" in *"-- $C/ms-playwright/chromium-1200"*) s=ok;; *) s=bad;; esac; check "the row deletes only the browser build" $s
+case "$acts" in *"$C/ms-playwright "*|*"$C/ms-playwright"$'\n'*|*"ms-playwright/mcp-chrome-profile"*) s=bad;; *) s=ok;; esac
 check "the MCP login profile is never in an action" $s
 [ -z "$(id_of 'C#tool')" ] && s=ok || s=bad; check "never-touch path with # is held" $s
 [ -z "$(id_of 'bar (old)')" ] && s=ok || s=bad; check "keep decision for a path with ( ) is held" $s
@@ -203,7 +230,7 @@ check "the MCP login profile is never in an action" $s
 [ -z "$(id_of 'dotlock-app')" ] && s=ok || s=bad; check "a lock folder with only dotfiles still locks" $s
 [ -z "$(id_of 'thesis')" ] && s=ok || s=bad; check "dist/ outside git is not proposed" $s
 [ -z "$(id_of 'code/tool')" ] && s=ok || s=bad; check "a running project under a symlinked root is not idle" $s
-case "$out" in *"rm -rf $E/pub.ext-2.0.0"*) s=ok;; *) s=bad;; esac; check "the extension version not in use is proposed" $s
+case "$acts" in *"$E/pub.ext-2.0.0"*) s=ok;; *) s=bad;; esac; check "the extension version not in use is proposed" $s
 case "$out" in *"$E/pub.ext-1.0.0"*) s=bad;; *) s=ok;; esac; check "the active (older) extension version is kept" $s
 [ -z "$(id_of 'repo-wt/dataw')" ] && s=ok || s=bad; check "worktree with an ignored .data/ database is not proposed" $s
 case "$out" in *"repo-wt/dataw  [dataw, 0 dirty"*"local-only files: 1]"*) s=ok;; *) s=bad;; esac; check ".data/ counts as a local-only file" $s
@@ -222,19 +249,60 @@ check "the git checkout hold is named" "$(has 'pyproj/.venv  [holds a git checko
 [ -n "$(id_of 'Caches/dropme')" ] && s=ok || s=bad; check "two absolute globs don't hold everything" $s
 [ -z "$(id_of 'JetBrains')" ] && s=ok || s=bad; check "a Caches folder with LocalHistory is not proposed" $s
 case "$out" in *"versions/1.0.0"*) s=bad;; *) s=ok;; esac; check "the pinned claude version is kept" $s
-case "$out" in *"rm -rf $V/2.0.0"*) s=ok;; *) s=bad;; esac; check "an unpinned older claude version is proposed" $s
+case "$acts" in *"$V/2.0.0"*) s=ok;; *) s=bad;; esac; check "an unpinned older claude version is proposed" $s
 dd=$(id_of 'DerivedData'); case " $rec " in *" $dd "*) s=bad;; *) s=ok;; esac; check "DerivedData built today is not in rec" $s
 row 'linked:' | grep -q ' 0\.2 ' && s=ok || s=bad; check "hardlinks shared by a row's folders count once" $s
 case "$(printf '%s\n' "$out" | sed -n '/^dev processes:/,/^$/p')" in *WiFiCloudAssets*) s=bad;; *) s=ok;; esac; check "dev-process list skips names that only contain tsx" $s
 n=$(id_of 'sdk/upstream/tool'); [ -n "$n" ] && s=ok || s=bad; check "a repo nested in an SDK's ignored folder still gets a row" $s
 row 'sdk/upstream/tool' | grep -q 'nested in ~/Documents/sdk' && s=ok || s=bad; check "the nested row names its parent" $s
 case " $rec " in *" $n "*) s=bad;; *) s=ok;; esac; check "a nested toolchain repo stays out of rec" $s
+
+# 0.3.0: session-owned build caches, running apps, labels, agent cwds, codex releases.
+t=$(id_of 'tool-run/target (cargo'); [ -n "$t" ] && s=ok || s=bad; check "a cargo target in a tool's Caches folder gets its own row" $s
+row 'tool-run/target (cargo' | grep -q 'ask build-session first' && s=ok || s=bad; check "an ask decision names whom to ask" $s
+case " $rec " in *" $t "*) s=bad;; *) s=ok;; esac; check "an ask row stays out of rec" $s
+tu=$(id_of 'tool-run/target-ui'); row 'tool-run/target-ui' | grep -q ' rebuild ' && s=ok || s=bad; check "a cargo build cache is a rebuild row" $s
+case " $rec " in *" $tu "*) s=bad;; *) s=ok;; esac; check "a cargo build cache stays out of rec" $s
+[ -z "$(id_of 'tool-run/sandbox')" ] && s=ok || s=bad; check "a child holding a browser profile is not proposed" $s
+check "the profile hold is named, with its size" "$(has 'tool-run/sandbox  [holds a browser profile]')"
+[ -z "$(id_of 'tool-run/shim')" ] && s=ok || s=bad; check "never-touch holds inside a split Caches folder" $s
+case "$acts" in *"$C/tool-run "*|*"$C/tool-run"$'\n'*) s=bad;; *) s=ok;; esac; check "the tool's whole Caches folder is never one action" $s
+[ -z "$(id_of 'FakeBrowser')" ] && s=ok || s=bad; check "an app's cache is not proposed while the app runs" $s
+check "the app-running hold is named" "$(has 'Caches/FakeBrowser  [app running]')"
+row 'dev.probe' | grep -q ' none ' && s=ok || s=bad; check "a cache holding a Sparkle update is labelled none" $s
+row 'Caches/Mozilla' | grep -q ' none ' && s=ok || s=bad; check "Mozilla's pending updates are labelled none" $s
+row '.gradle/caches' | grep -q ' download ' && s=ok || s=bad; check "gradle caches are labelled download" $s
+[ -n "$(id_of '.cache/uv')" ] && s=ok || s=bad; check "uv's own git repos don't hold its cache" $s
+case "$acts" in *"$X/0.1.0"*) s=ok;; *) s=bad;; esac; check "a superseded codex release is proposed" $s
+case "$acts" in *"$X/0.2.0"*|*"$X/0.3.0"*) s=bad;; *) s=ok;; esac; check "the current and newest codex releases are kept" $s
+[ -n "$(id_of 'agentproj')" ] && s=ok || s=bad; check "an agent CLI's cwd doesn't hold a repo's build output" $s
+check "delete rows run recheck.sh" "$(has 'recheck.sh --rm -- ')"
+if command -v dua >/dev/null 2>&1; then
+  check "gitignored renders are listed under needs a look" "$(has '~/Documents/agentproj/renders  (gitignored')"
+  check "a non-app Caches child goes to needs a look" "$(has '~/Library/Caches/tool-run/state  (in ~/Library/Caches/tool-run')"
+  [ "$(uname)" = Darwin ] && check "UNKNOWN says how much of the used space was measured" "$(has 'measured: home ')"
+fi
 check "prints the survey-only footer" "$(has 'nothing deleted')"
 [ "$before" = "$after" ] && s=ok || s=bad; check "fake HOME unchanged outside the keep-lists (nothing deleted)" $s
 
+# recheck.sh: the delete-time re-check, then a delete.
+rc="$here/../skills/storage-reclaim/scripts/recheck.sh"
+rrun() { env -u XDG_CONFIG_HOME HOME="$fake" zsh "$rc" "$@" 2>&1; }
+o=$(rrun -- "$C/dropme" "$C/FakeBrowser" "$C/keepme" "$D/busy-app/node_modules" "$D/agentproj/.next"); st=$?
+case "$o" in *"ok     ~/Library/Caches/dropme"*) s=ok;; *) s=bad;; esac; check "recheck: a free path passes (its own command line doesn't hold it)" $s
+case "$o" in *"HELD   ~/Library/Caches/FakeBrowser  (FakeBrowser is running"*) s=ok;; *) s=bad;; esac; check "recheck: a running app's cache is held" $s
+case "$o" in *"HELD   ~/Library/Caches/keepme  (never-touch"*) s=ok;; *) s=bad;; esac; check "recheck: never-touch is held" $s
+case "$o" in *"HELD   ~/Documents/busy-app/node_modules  (runs in ~/Documents/busy-app"*) s=ok;; *) s=bad;; esac; check "recheck: a process in the repo holds its build output" $s
+case "$o" in *"ok     ~/Documents/agentproj/.next"*) s=ok;; *) s=bad;; esac; check "recheck: an agent CLI in the repo doesn't" $s
+[ "$st" -eq 1 ] && s=ok || s=bad; check "recheck: exits 1 when anything is held" $s
+o=$(rrun --rm -- "$C/dropme"); st=$?
+[ ! -e "$C/dropme" ] && [ "$st" -eq 0 ] && s=ok || s=bad; check "recheck --rm deletes a path that passes" $s
+case "$o" in *"freed  ~/Library/Caches/dropme  du "*"df +"*) s=ok;; *) s=bad;; esac; check "recheck --rm prints what it freed" $s
+[ -e "$C/keepme" ] && s=ok || s=bad; check "recheck --rm left everything else alone" $s
+
 # First run without keep-lists copies the templates.
 rm -rf "$conf"; out2=$(run)
-[ -f "$conf/never-touch.txt" ] && [ -f "$conf/decisions.tsv" ] && s=ok || s=bad; check "first run copies the keep-list templates" $s
+[ -f "$conf/never-touch.txt" ] && [ -f "$conf/decisions.tsv" ] && [ -f "$conf/apps.tsv" ] && s=ok || s=bad; check "first run copies the keep-list templates" $s
 grep -qv '^#' "$conf/never-touch.txt" && s=bad || s=ok; check "never-touch template holds comments only" $s
 
 if command -v dua >/dev/null 2>&1; then

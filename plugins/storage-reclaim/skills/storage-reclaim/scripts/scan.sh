@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # storage-reclaim: read-only survey. It deletes nothing. Its only writes are its own
-# snapshots (~/.local/state/storage-reclaim: keeps 3, drops older than 45 days) and,
-# on the first run, the keep-lists copied from the templates (~/.config/storage-reclaim).
+# snapshots (~/.local/state/storage-reclaim: the newest 3, then one a week, none past 45 days)
+# and, on the first run, the keep-lists copied from the templates (~/.config/storage-reclaim).
 #
 # Usage: zsh scan.sh   (about a minute; without dua, sizes come from du and take longer)
 #
@@ -14,6 +14,8 @@
 #   project_roots    CLAUDE_PLUGIN_OPTION_PROJECT_ROOTS    STORAGE_RECLAIM_PROJECT_ROOTS    colon-separated
 #   idle_days        CLAUDE_PLUGIN_OPTION_IDLE_DAYS        STORAGE_RECLAIM_IDLE_DAYS        7
 # STORAGE_RECLAIM_MIN_MB (default 200) and STORAGE_RECLAIM_ROWS (default 10) shape the table.
+# STORAGE_RECLAIM_LOOK_MB (default 1000): content folders under the project roots listed in NEEDS A LOOK.
+# STORAGE_RECLAIM_MAP_MIN_FREE_MB (default 500): below this much free space the map is skipped.
 
 emulate -L zsh
 setopt null_glob extended_glob
@@ -27,6 +29,8 @@ roots_cfg=${CLAUDE_PLUGIN_OPTION_PROJECT_ROOTS:-${STORAGE_RECLAIM_PROJECT_ROOTS:
 IDLE=${CLAUDE_PLUGIN_OPTION_IDLE_DAYS:-${STORAGE_RECLAIM_IDLE_DAYS:-7}}
 MIN=$(( ${STORAGE_RECLAIM_MIN_MB:-200} * 1000000 ))
 ROWS=${STORAGE_RECLAIM_ROWS:-10}
+LOOKMIN=$(( ${STORAGE_RECLAIM_LOOK_MB:-1000} * 1000000 ))
+MAPFREE=$(( ${STORAGE_RECLAIM_MAP_MIN_FREE_MB:-500} * 1000000 ))
 # Unexpanded plugin placeholders mean unset.
 [[ $LOCK_DIR == *'${'* ]] && LOCK_DIR=
 [[ $WT_SUFFIX == *'${'* ]] && WT_SUFFIX=
@@ -49,7 +53,7 @@ report="${skill:h}/disk-map/scripts/report.py"
 state="${XDG_STATE_HOME:-$HOME/.local/state}/storage-reclaim"
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/storage-reclaim"
 mkdir -p "$conf"
-for f in never-touch.txt decisions.tsv; do [[ -e $conf/$f ]] || cp "$skill/$f" "$conf/$f"; done
+for f in never-touch.txt decisions.tsv apps.tsv; do [[ -e $conf/$f ]] || cp "$skill/$f" "$conf/$f"; done
 
 command -v lsof >/dev/null || { print -u2 "lsof is missing; without it nothing can be checked for use, so the scan stops."; exit 1; }
 
@@ -83,7 +87,7 @@ sum_bytes() {  # one du call for the lot: hardlinks shared between the paths cou
 # ---------------------------------------------------------------------------
 # What must not go: keep-lists, locks, other sessions' folders, anything in use.
 
-typeset -a NEVER=('*/.git' '*/.env*') KEEP LOCKED_TREES
+typeset -a NEVER=('*/.git' '*/.env*') KEEP LOCKED_TREES ASKP ASKO APPDIR APPBUN
 entry() {  # reply = the entry as written and as a real path (candidates are real paths)
   local e=${1/#\~/$HOME} pre dir
   while [[ $e == ?*/ ]]; do e=${e%/}; done
@@ -100,12 +104,25 @@ while IFS=$'\t' read -r p _; do
   [[ -z $p || $p == \#* ]] && continue
   entry "$p"; NEVER+=($reply)
 done < "$conf/never-touch.txt"
-while IFS=$'\t' read -r d p dec re _; do
+while IFS=$'\t' read -r d p dec re note; do
   [[ -z $d || $d == \#* || $d == date ]] && continue
-  [[ $dec == keep || $dec == 'user handles' ]] || continue
+  [[ $dec == keep || $dec == 'user handles' || $dec == ask ]] || continue
   [[ $re == <->-<->-<-> && $re < $today ]] && continue   # recheck date passed: propose again
-  entry "$p"; KEEP+=($reply)
+  entry "$p"
+  if [[ $dec == ask ]]; then   # another session owns it: the row stays, out of rec, naming whom to ask
+    for e in $reply; do ASKP+=("$e"); ASKO+=("${${note%%:*}:-its owner}"); done
+  else
+    KEEP+=($reply)
+  fi
 done < "$conf/decisions.tsv"
+# Caches an app keeps using while it runs: folder under ~/Library/Caches (or a ~ path), then the app bundle.
+if [[ -f $conf/apps.tsv ]]; then
+  while IFS=$'\t' read -r p a _; do
+    [[ -z $p || $p == \#* || -z $a ]] && continue
+    [[ $p == [~/]* ]] || p="~/Library/Caches/$p"
+    APPDIR+=("${p/#\~/$HOME}"); APPBUN+=("$a")
+  done < "$conf/apps.tsv"
+fi
 covers() {  # covers PATH ENTRY...: PATH is an entry, sits under one, or holds one. Entries are literal.
   local p=$1 e; shift
   for e in "$@"; do [[ $p == "$e" || $p == "$e"/* || $e == "$p"/* ]] && return 0; done
@@ -135,19 +152,35 @@ if [[ -n $LOCK_DIR && ${#ROOTS} -gt 0 ]]; then
   done
 fi
 
-# Every open file, working directory and command line, gathered once (about 30 s).
-{ lsof -Fn 2>/dev/null | sed -n 's/^n//p'; ps -axo command= 2>/dev/null; } | sort -u > "$db"
-typeset -a CWDS=(${(f)"$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u)"})
-# Paths named on command lines, relative ones resolved against the process's cwd: a dev server
-# started from a parent folder (`python app1/server.py`, `npm --prefix app1 run dev`) is inside app1.
-typeset -aU ARGPATHS
-typeset -A PCWD
+# Every process, open file, working directory and command line, gathered once (about 30 s).
+typeset -A PPIDOF PCMD PCWD SELF AGENT
+for l in ${(f)"$(ps -axo pid=,ppid=,command= 2>/dev/null)"}; do
+  l=${l## #}; pid=${l%% *}; l=${l#* }; l=${l## #}; PPIDOF[$pid]=${l%% *}; PCMD[$pid]=${l#* }
+done
+# An empty or failed process list would turn every in-use check off: stop instead.
+(( ${#PCMD} >= 5 )) || { print -u2 "ps listed only ${#PCMD} processes; without a process list nothing can be checked for use, so the scan stops."; exit 1; }
+# The scan's own chain, up to the agent that started it: its command lines name the paths it checks.
+p=$$; while [[ -n $p && $p != (0|1) && -z ${SELF[$p]} ]]; do SELF[$p]=1; p=${PPIDOF[$p]}; done
+# Agent CLIs and the shells they spawn sit at a repo root all day: that cwd says nothing about build output.
+for pid in ${(k)PCMD}; do c=${${PCMD[$pid]}%% *}; [[ ${c:t} == (claude|codex) ]] && AGENT[$pid]=1; done
+for pid in ${(k)PCMD}; do
+  c=${${PCMD[$pid]}%% *}; [[ -n ${AGENT[${PPIDOF[$pid]}]} && ${c:t} == (-|)(zsh|bash|sh|fish) ]] && AGENT[$pid]=1
+done
+{ lsof -Fn 2>/dev/null | sed -n 's/^n//p'; for pid in ${(k)PCMD}; do [[ -n ${SELF[$pid]} ]] || print -r -- "${PCMD[$pid]}"; done; } | sort -u > "$db"
 for l in ${(f)"$(lsof -a -d cwd -Fpn 2>/dev/null)"}; do
   case $l in p*) pid=${l#p} ;; n*) PCWD[$pid]=${l#n} ;; esac
 done
-for l in ${(f)"$(ps -axo pid=,command= 2>/dev/null)"}; do
-  l=${l## #}; pid=${l%% *}; cwd=${PCWD[$pid]}
-  for tok in ${(z)${l#* }}; do
+typeset -aU CWDS CWDS_USE   # CWDS: any process works there (idle). CWDS_USE: one that isn't an agent or this scan.
+for pid in ${(k)PCWD}; do
+  CWDS+=("${PCWD[$pid]}"); [[ -n ${SELF[$pid]}${AGENT[$pid]} ]] || CWDS_USE+=("${PCWD[$pid]}")
+done
+# Paths named on command lines, relative ones resolved against the process's cwd: a dev server
+# started from a parent folder (`python app1/server.py`, `npm --prefix app1 run dev`) is inside app1.
+typeset -aU ARGPATHS
+for pid in ${(k)PCMD}; do
+  [[ -n ${SELF[$pid]} ]] && continue
+  l=${PCMD[$pid]}; cwd=${PCWD[$pid]}
+  for tok in ${(z)l}; do
     tok=${(Q)tok}; tok=${tok#--*=}
     [[ $tok == -* || $tok == '' ]] && continue
     [[ $tok == /* ]] || { [[ -n $cwd ]] || continue; tok=$cwd/$tok; }
@@ -161,13 +194,35 @@ used() {  # used PATH [PROJECT]: a process has it open, names it, or runs inside
   grep -qF -- "$1" "$db" && return 0
   [[ -n $2 ]] || return 1
   local c
-  for c in $CWDS; do [[ $1 == $c/* && ( $c == $2 || $c == $2/* ) ]] && return 0; done
+  for c in $CWDS_USE; do [[ $1 == $c/* && ( $c == $2 || $c == $2/* ) ]] && return 0; done
   named_in "$2"
 }
+app_running() {  # app_running PATH: REPLY = the app (apps.tsv) whose cache PATH is or holds, while it runs
+  local i pid
+  for (( i = 1; i <= $#APPDIR; i++ )); do
+    [[ $1 == ${APPDIR[i]} || $1 == ${APPDIR[i]}/* || ${APPDIR[i]} == $1/* ]] || continue
+    for pid in ${(k)PCMD}; do
+      # A browser started on its own --user-data-dir (a test or agent browser) keeps its cache there.
+      [[ ${PCMD[$pid]} == */${APPBUN[i]}/Contents/MacOS/* && ${PCMD[$pid]} != *--user-data-dir=* ]] && { REPLY=${APPBUN[i]%.app}; return 0; }
+    done
+  done
+  return 1
+}
+ask_owner() {  # ask_owner PATH: REPLY = the session decisions.tsv says to ask before PATH goes
+  local i
+  for (( i = 1; i <= $#ASKP; i++ )); do
+    [[ $1 == ${ASKP[i]} || $1 == ${ASKP[i]}/* || ${ASKP[i]} == $1/* ]] && { REPLY=${ASKO[i]}; return 0; }
+  done
+  return 1
+}
+# Package-manager caches keep bare git repos of their own (uv git-v0, cargo git): no user checkout.
+PM_CACHES=("$HOME/.cache/uv" "$HOME/.cache/pip" "$HOME/.cargo/git" "$HOME/.cargo/registry" "$HOME/go/pkg/mod" "$HOME/.gradle/caches" "$HOME/.npm")
 why_held() {
   never "$1" && { print never-touch; return; }
   # A git checkout inside (pip -e sources in .venv/src, a dev pod) may hold unpushed work.
-  [[ $1 != $2 && -d $1 && -n $(find "$1" -maxdepth 4 -name .git -print -quit 2>/dev/null) ]] && { print 'holds a git checkout'; return; }
+  local pm=0 e; for e in $PM_CACHES; do [[ $1 == $e || $1 == $e/* ]] && pm=1; done
+  (( ! pm )) && [[ $1 != $2 && -d $1 && -n $(find "$1" -maxdepth 4 -name .git -print -quit 2>/dev/null) ]] && { print 'holds a git checkout'; return; }
+  app_running "$1" && { print 'app running'; return; }
   covers "$1" $KEEP && { print kept; return; }
   [[ -n $WT_SUFFIX && ( $1 == *$WT_SUFFIX/* || $1 == *$WT_SUFFIX ) ]] && { print 'session folder'; return; }
   local t; for t in $LOCKED_TREES; do [[ $1 == $t || $1 == $t/* ]] && { print locked; return; }; done
@@ -181,9 +236,11 @@ sift() {  # sift PROJECT PATH...: reply = the paths free to go; the rest are log
   done
 }
 cand() {  # cand BACK CLASS REC WHAT ACTION BYTES PATH...  (ACTION rm: delete the paths; BYTES -: measure them)
-  local back=$1 cls=$2 rec=$3 what=$4 act=$5 b=$6; shift 6
+  local back=$1 cls=$2 rec=$3 what=$4 act=$5 b=$6 p; shift 6
   [[ $b == - ]] && { sum_bytes "$@"; b=$REPLY; }
-  [[ $act == rm ]] && act="rm -rf ${(j: :)${(q)@}}"
+  for p in "$@"; do ask_owner "$p" && { rec=0; what+=" · ask $REPLY first"; break; }; done
+  # recheck.sh repeats the in-use check right before it deletes, and prints what each path freed.
+  [[ $act == rm ]] && act="zsh ${(q)here}/recheck.sh --rm -- ${(j: :)${(q)@}}"
   print -r -- "$b"$'\t'"$back"$'\t'"$cls"$'\t'"$rec"$'\t'"$what"$'\t'"$act" >> "$cands"
 }
 
@@ -253,7 +310,12 @@ print -r -- "keep-lists: $(tilde "$conf")/never-touch.txt, decisions.tsv"
 
 snap=
 h "WHAT GREW SINCE THE LAST RUN (home folder)"
-if [[ -f $map ]] && command -v dua >/dev/null; then
+vol=$HOME; [[ -d /System/Volumes/Data ]] && vol=/System/Volumes/Data
+free0=$(( $(df -k "$vol" | awk 'NR == 2 { print $4 }') * 1024 ))
+if (( free0 < MAPFREE )); then
+  # A full disk is when this runs most; the snapshot and its treemap need a few MB each.
+  print -r -- "(map skipped: $(( free0 / 1000000 )) MB free, under $(( MAPFREE / 1000000 )) MB; sizes come from du, no diff this run)"
+elif [[ -f $map ]] && command -v dua >/dev/null; then
   mkdir -p "$state"
   # Compare against the newest snapshot at least 20 hours old; a minutes-old one shows nothing.
   prev=
@@ -270,10 +332,14 @@ if [[ -f $map ]] && command -v dua >/dev/null; then
     else
       print -r -- "(first run: the next run shows the diff)"
     fi
-    olds=("$state"/*.stacks(N.om))
+    # Keep the newest 3, then the newest of each week up to 45 days, for the diff.
+    olds=("$state"/*.stacks(N.om)); typeset -A wk
     for old in ${olds[4,-1]}; do
-      [[ -n $(find "$old" -mtime +45) ]] && rm -f "$old" "${old%.stacks}".{txt,html,unreadable}
+      w=$(date -r "$old" +%G-%V)
+      if [[ -n $(find "$old" -mtime +45) || -n ${wk[$w]} ]]; then rm -f "$old" "${old%.stacks}".{txt,html,unreadable}
+      else wk[$w]=1; fi
     done
+    for f in "$state"/*.(txt|html|unreadable)(N.); do [[ -e ${f%.*}.stacks ]] || rm -f "$f"; done   # orphans
   else
     print -r -- "(the map failed; see $(tilde "$state")/last-map.log)"
   fi
@@ -471,6 +537,17 @@ if (( $#vs > 1 )); then
   old=(); for v in $vs; do (( ${keep[(Ie)${v:t}]} )) || old+=("$v"); done
   sift "" $old; (( $#reply )) && cand none Q 1 "$(n_of $#reply 'old claude CLI version')" rm - $reply
 fi
+# Codex keeps releases per package; profiles may share one packages folder through symlinks.
+# Keep the newest and whatever any profile's `current` link resolves to.
+typeset -aU crel ckeep; old=()
+for r in "$HOME"/.codex*/packages/*/releases(N-/); do crel+=("${r:A}"); done
+for l in "$HOME"/.codex*/packages/*/current(N@); do [[ -e $l ]] && ckeep+=("${l:A}"); done
+for r in $crel; do
+  vs=("$r"/*(N/)); (( $#vs > 1 )) || continue
+  newest=$(print -l -- ${vs:t} | sort -V | tail -1)
+  for v in $vs; do [[ ${v:t} == $newest ]] || (( ${ckeep[(Ie)$v]} )) || old+=("$v"); done
+done
+sift "" $old; (( $#reply )) && cand none Q 1 "$(n_of $#reply 'old codex release')" rm - $reply
 for base in "$HOME"/.vscode/extensions "$HOME"/.cursor/extensions "$HOME"/.windsurf/extensions; do
   [[ -d $base ]] || continue
   old=()
@@ -491,25 +568,76 @@ sift "" $upd; (( $#reply )) && cand none Q 1 "updater leftovers (${(j:, :)${repl
 
 # Caches refill on their own. Browser profiles (Cookies, Local State, *-profile, User Data)
 # hold logins and are not caches, wherever they sit.
-profiles=()
-is_profile() { [[ ${1:t} == (ms-playwright-mcp*|*-profile|User Data) || -n $(find "$1" -maxdepth 5 \( -name Cookies -o -name 'Local State' -o -name '*-profile' -o -name 'User Data' \) -print -quit 2>/dev/null) ]]; }
+profiles=() LOOKD=()
+profile_roots() {  # profile_roots DIR: the profile folders inside DIR, as paths relative to DIR ('.' = DIR itself)
+  local f r
+  for f in ${(f)"$(find "$1" -maxdepth 5 \( -name Cookies -o -name 'Local State' -o -name '*-profile' -o -name 'User Data' \) -print 2>/dev/null)"}; do
+    case ${f:t} in
+      Cookies) r=${f:h}; [[ ${r:t} == (Default|Profile*) ]] && r=${r:h} ;;
+      'Local State') r=${f:h} ;;
+      *) r=$f ;;
+    esac
+    [[ $r == $1 ]] && print . || print -r -- "${r#$1/}"
+  done | sort -u
+}
+is_profile() { [[ ${1:t} == (ms-playwright-mcp*|*-profile|User Data) || -n $(profile_roots "$1") ]]; }
+hold_as() {  # hold_as REASON PATH: not a cache; listed under HELD BACK and counted on the held: line
+  bytes "$2"; print -r -- "$1"$'\t'"$REPLY"$'\t'"$(tilde "$2")" >> "$held"; profiles+=("$2")
+}
+# A cargo target dir (CACHEDIR.TAG or .rustc_info.json next to debug/ or release/): a build, not a cache.
+is_cargo_target() { [[ ( -f $1/CACHEDIR.TAG || -f $1/.rustc_info.json ) && ( -d $1/debug || -d $1/release ) ]]; }
 for c in "$HOME"/Library/Caches/*(N/); do
   [[ ${c:t} == *([Ss]hip[Ii]t|updater)* ]] && continue
   if [[ ${c:t} == (ms-playwright|puppeteer|Cypress) ]]; then
     # Downloaded browsers: only the browser builds go; a profile kept next to them stays.
     bins=() 
-    for b in "$c"/*(N/); do is_profile "$b" && profiles+=("$b") || bins+=("$b"); done
+    for b in "$c"/*(N/); do is_profile "$b" && hold_as 'browser profile' "$b" || bins+=("$b"); done
     sift "" $bins; (( $#reply )) && cand download Q 1 "$(tilde "$c"): $(n_of $#reply 'browser build')" rm - $reply
     continue
   fi
-  is_profile "$c" && { profiles+=("$c"); continue; }
+  if is_cargo_target "$c"; then
+    sift "" "$c"; (( $#reply )) && cand rebuild Q 0 "$(tilde "$c") (cargo build cache)" rm - "$c"
+    continue
+  fi
+  roots=(${(f)"$(profile_roots "$c")"})
+  deep=0; shallow=0
+  for r in $roots; do [[ $r == . || $r != */* ]] && shallow=1 || deep=1; done
+  [[ ${c:t} == (ms-playwright-mcp*|*-profile|User Data) ]] && shallow=1
+  cargo=0; for ch in "$c"/*(N/); do is_cargo_target "$ch" && cargo=1; done
+  if (( ! shallow && ( deep || cargo ) )); then
+    # Not one app's cache: a tool keeps builds, sandboxes or profiles here. Judge each child;
+    # anything that is neither a build nor a profile may be state, so it only gets a look.
+    for ch in "$c"/*(N/); do
+      if is_cargo_target "$ch"; then
+        sift "" "$ch"; (( $#reply )) && cand rebuild Q 0 "$(tilde "$ch") (cargo build cache)" rm - "$ch"
+      elif is_profile "$ch"; then
+        never "$ch" || hold_as 'holds a browser profile' "$ch"
+      else
+        never "$ch" && continue
+        bytes "$ch"; (( REPLY >= MIN )) && LOOKD+=("$REPLY"$'\t'"$(tilde "$ch")"$'\t'"in $(tilde "$c"), which isn't one app's cache")
+      fi
+    done
+    continue
+  fi
+  (( shallow )) && { hold_as 'browser profile' "$c"; continue; }
   # JetBrains keeps Local History (your edit history) under Caches.
-  [[ -n $(find "$c" -maxdepth 3 -name LocalHistory -print -quit 2>/dev/null) ]] && { profiles+=("$c"); continue; }
-  sift "" "$c"; (( $#reply )) && cand regrows Q 1 "$(tilde "$c")" rm - "$c"
+  [[ -n $(find "$c" -maxdepth 3 -name LocalHistory -print -quit 2>/dev/null) ]] && { hold_as 'editor history' "$c"; continue; }
+  sift "" "$c"; (( $#reply )) || continue
+  # An update an app downloaded (Sparkle, Mozilla's updater) is junk once installed or skipped.
+  u=; [[ -d $c/org.sparkle-project.Sparkle ]] && u=$c/org.sparkle-project.Sparkle
+  [[ ${c:t} == Mozilla && -d $c/updates ]] && u=$c/updates
+  if [[ -n $u ]]; then bytes "$c"; cb=$REPLY; bytes "$u"; fi
+  if [[ -n $u ]] && (( REPLY * 2 >= cb )); then
+    cand none Q 1 "$(tilde "$c") (mostly a downloaded app update)" rm - "$c"
+  else
+    cand regrows Q 1 "$(tilde "$c")" rm - "$c"
+  fi
 done
+# npm, uv and pip refill as you install. Gradle and cargo re-download, then rebuild, on the next build.
 for c in "$HOME"/.npm/_cacache "$HOME"/.cache/uv "$HOME"/.cache/pip "$HOME"/.gradle/caches "$HOME"/.cargo/registry/cache; do
   [[ -d $c ]] || continue
-  sift "" "$c"; (( $#reply )) && cand regrows Q 1 "$(tilde "$c")" rm - "$c"
+  [[ $c == */(.gradle/caches|.cargo/registry/cache) ]] && back=download || back=regrows
+  sift "" "$c"; (( $#reply )) && cand $back Q 1 "$(tilde "$c")" rm - "$c"
 done
 npx=("$HOME"/.npm/_npx/*(N/))
 sift "" $npx; (( $#reply )) && cand regrows Q 1 "$(n_of $#reply 'npx package folder') nothing runs from" rm - $reply
@@ -558,8 +686,8 @@ for v in "$HOME/Library/Application Support/Claude/vm_bundles" "$HOME/Library/Co
   [[ -e $v ]] || continue
   bytes "$v"; b=$REPLY; (( b >= 50000000 )) && print -r -- "$(gb $b) GB  $(tilde "$v")"
 done
-(( $#profiles )) && { pl=(); for x in $profiles; do pl+=("$(tilde "$x")"); done
-  print -r -- "not caches, though they sit in Caches (browser logins, editor local history): ${(j:, :)pl}"; }
+(( $#profiles )) && { pl=(); for x in $profiles; do bytes "$x"; pl+=("$(tilde "$x") $(gb $REPLY) GB"); done
+  print -r -- "not caches, though they sit in Caches (browser logins, editor local history; also under HELD BACK): ${(j:, :)pl}"; }
 
 # ---------------------------------------------------------------------------
 h "DRAINS"
@@ -574,8 +702,35 @@ h "NEEDS A LOOK (may be the only copy)"
 look=(${(f)"$(find "$HOME"/Downloads "$HOME"/Desktop "$HOME"/Documents $ROOTS -maxdepth 4 -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.pkg' -o -name '*.iso' -o -name '*.tar.gz' -o -name '*.7z' \) -size +100M 2>/dev/null | sort -u)"})
 look_b=0
 for f in $look; do bytes "$f"; b=$REPLY; (( look_b += b )); print -r -- "$(gb $b) GB  $(tilde "$f")"; done
-print -r -- "${#look}"$'\t'"$look_b" > "$acts.look"
-print -r -- "(archive: is it really extracted? dmg/pkg: is the app installed? a repo-shaped copy: git status and unpushed commits)"
+# Big folders under the project roots that no install or build recreates: gitignored content
+# (renders, run logs, scratch output) and folders outside any repo. The shallowest such folder only.
+skipname='(node_modules|.git|.next|.nuxt|.turbo|.venv|venv|target|Pods|.gradle|build|dist|DerivedData|.expo|.dart_tool|vendor)'
+done_l=()
+if (( $#SZ )); then
+  for rel in ${(o)${(k)SZ}}; do
+    (( SZ[$rel] >= LOOKMIN )) || continue
+    p=$HOME/$rel; inr=0
+    for r in $ROOTS; do [[ $p == $r/* ]] && inr=1; done
+    (( inr )) || continue
+    [[ /$rel/ == */${~skipname}/* ]] && continue
+    under=0; for d in $done_l; do [[ $p == $d/* ]] && under=1; done; (( under )) && continue
+    never "$p" && continue; covers "$p" $KEEP && continue
+    if top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null); then
+      [[ ${top:A} == ${p:A} ]] && continue
+      git -C "$top" check-ignore -q -- "${p#$top/}" 2>/dev/null || continue
+      LOOKD+=("${SZ[$rel]}"$'\t'"$(tilde "$p")"$'\t'"gitignored in $(tilde "$top")"); done_l+=("$p")
+    elif [[ -z $(find "$p" -maxdepth 3 -name .git -print -quit 2>/dev/null) ]]; then
+      LOOKD+=("${SZ[$rel]}"$'\t'"$(tilde "$p")"$'\t'"not in git"); done_l+=("$p")
+    fi
+  done
+fi
+if (( $#LOOKD )); then
+  print -l -- $LOOKD | sort -t$'\t' -k1,1nr | awk -F'\t' '{ printf "%.1f GB  %s  (%s)\n", $1 / 1e9, $2, $3 }'
+  for x in $LOOKD; do (( look_b += ${x%%$'\t'*} )); done
+fi
+print -r -- "$(( $#look + $#LOOKD ))"$'\t'"$look_b" > "$acts.look"
+print -r -- "(archive: is it really extracted? dmg/pkg: is the app installed? a repo-shaped copy: git status and unpushed commits;"
+print -r -- " a content folder: the user's call, whatever its size)"
 
 # ---------------------------------------------------------------------------
 h "HELD BACK"
@@ -588,10 +743,18 @@ ps -axo pid,command 2>/dev/null \
 
 if [[ -f $snap ]]; then
   unk=$(python3 -I "$report" unreadable "$snap" 2>/dev/null)
+  h "UNKNOWN (what the scan couldn't see)"
   if [[ -n $unk ]]; then
-    h "UNKNOWN (unreadable, size not counted)"
     print -r -- "$unk" | head -6 | while IFS=$'\t' read -r n u; do print -r -- "~/$u: $n unreadable (this folder or one inside it)"; done
     [[ $(uname) == Darwin ]] && print -r -- "(Full Disk Access for the terminal makes these readable)"
+  fi
+  # How much of the used space the scan saw: the home map plus the big folders outside it.
+  if [[ $(uname) == Darwin ]]; then
+    homeb=$(awk '!/^#/ { s += $NF } END { printf "%.0f", s }' "$snap")
+    outk=$(du -xsk /Applications /Library /opt/homebrew /usr/local /private/var/folders /private/var/db /private/var/vm 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+    usedb=$(( $(df -k "$vol" | awk 'NR == 2 { print $3 }') * 1024 ))
+    seen=$(( homeb + outk * 1024 ))
+    print -r -- "measured: home $(gb $homeb) GB + apps and system folders $(gb $(( outk * 1024 ))) GB = $(gb $seen) GB of $(gb $usedb) GB used; $(gb $(( usedb > seen ? usedb - seen : 0 ))) GB not seen (unreadable folders, other system files, purgeable space)"
   fi
 fi
 }
@@ -619,13 +782,13 @@ sort -t$'\t' -k1,1nr "$cands" | awk -F'\t' -v min=$MIN -v free=$free -v acts="$a
     if (rec) printf "rec =%s · %.1f → ~%.1f GB free\n", rec, free / 1e9, (free + rb) / 1e9
     else print "rec = nothing safe to take without asking"
   }'
-held_line=$(awk -F'\t' -v min=$MIN '$2 >= min { c[$1]++ } END { for (k in c) printf "%s%d %s", (s++ ? " · " : ""), c[k], k }' "$held")
+held_line=$(awk -F'\t' -v min=$MIN '$2 >= min { c[$1]++; b[$1] += $2 } END { for (k in c) printf "%s%d %s %.1f GB", (s++ ? " · " : ""), c[k], k, b[k] / 1e9 }' "$held")
 read -r look_n look_b < "$acts.look" 2>/dev/null; rm -f "$acts.look"
 line=${held_line:+held: $held_line}
-(( ${look_n:-0} )) && line+="${line:+ · }needs a look: $look_n files, $(gb $look_b) GB"
+(( ${look_n:-0} )) && line+="${line:+ · }needs a look: $look_n, $(gb $look_b) GB"
 [[ -n $line ]] && print -r -- "$line"
 
 cat "$body"
-h "ACTIONS (the command behind each ID; re-check [IN USE] right before running)"
+h "ACTIONS (the command behind each ID; recheck.sh re-checks for use right before it deletes)"
 cat "$acts"
 printf '\nSurvey only, nothing deleted. %d s.\n' $(( SECONDS - t0 ))
