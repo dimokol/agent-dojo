@@ -155,8 +155,9 @@ test('verified Claude schema writes a peer frame but never claims receiver accep
   })
   const adapter = createAdapters({ requireProcessIdentity: false, executor: async () => ({ code: 0, stdout: '2.1.296 (Claude Code)\n' }) })
   const result = await adapter.deliver(input('claude', { session: { id: ID, runtime: 'claude', endpoint } }))
-  assert.equal(result.status, 'pending')
-  assert.match(result.detail, /Await agent_chat acknowledgement/)
+  // "rung" says the socket took the notice; it is not "accepted", which no Claude ring claims.
+  assert.equal(result.status, 'rung')
+  assert.match(result.detail, /^The tab was rung and reads its inbox on its next turn\. Nothing else to do; a reply wakes you\.$/)
   const data = await frame
   assert.equal(data.type, 'user')
   // /resume and /clear can change the live conversation while the MCP
@@ -284,8 +285,8 @@ test('the receiving tab\'s own version decides wake-ups, not the newly installed
   const adapter = createAdapters({ requireProcessIdentity: false, verifiedClaudeVersion: version => version === '2.1.302',
     executor: async () => { versionCalls++; return { code: 0, stdout: '2.1.999 (Claude Code)\n' } } })
   const older = await adapter.deliver(input('claude', { session: { id: ID, runtime: 'claude', endpoint, claudeVersion: '2.1.302' } }))
-  assert.equal(older.status, 'pending')
-  assert.match(older.detail, /Peer frame written/)
+  assert.equal(older.status, 'rung')
+  assert.match(older.detail, /The tab was rung/)
   assert.equal(versionCalls, 0)
   const newer = await adapter.deliver(input('claude', { session: { id: ID, runtime: 'claude', endpoint, claudeVersion: '2.1.999' } }))
   assert.equal(newer.status, 'unsupported')

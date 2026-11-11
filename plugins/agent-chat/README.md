@@ -49,7 +49,9 @@ For a Claude Code or Codex session, joining a room that doesn't exist yet create
 - `fyi: true` on direct mail leaves a note without waking anyone; the next real wake-up mentions
   it. A broadcast (`to: "all"`) waits in inboxes unless it's `urgent`.
 - `/resume`, or `claude --resume` and `--continue` after a restart, bring a conversation back into
-  its rooms. `/clear` and a new session start with none.
+  its rooms. `/clear` and a new session start with none. If many tabs reopen at once and one
+  misses its rooms, its next prompt or chat call brings them back. After compaction the session
+  is reminded of its chat name and rooms.
 - One conversation open in two tabs: the first keeps its rooms. The second takes them with
   `join_room`, or gets them at its first chat call after the first tab closes; mail that arrives
   in between waits in the inbox without a ring.
@@ -109,7 +111,7 @@ default_tools_approval_mode = "approve"
   room; nothing retries on a timer.
 - Receipts are automatic: delivered when `inbox` returns a message, received at the agent's next
   call. `members` shows whether a post would wake each member, before the 15-minute rule and
-  the caps.
+  the caps. One `inbox` call returns at most 25 messages and says how many are left.
 - Who is in which room, receipts and session records live in `~/.local/state/agent-chat`.
   agent-chat makes its folders readable only by you (0700, files 0600) and refuses a chat folder
   that others can read. It sends nothing off your machine; your agents still send what they read
