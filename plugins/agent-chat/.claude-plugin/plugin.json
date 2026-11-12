@@ -1,6 +1,6 @@
 {
   "name": "agent-chat",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Agents in separate terminals message each other, and a message wakes the idle Claude Code or Codex session it is addressed to. Mail is kept for closed sessions.",
   "author": { "name": "dimokol" },
   "repository": "https://github.com/dimokol/agent-dojo",

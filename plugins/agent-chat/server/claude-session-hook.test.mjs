@@ -90,6 +90,33 @@ test('compact keeps the conversation: no restore, registration task or version n
   assert.equal(f.run([],start(f,'compact')),'{}')
   for(const directory of ['hook-tasks','lifecycle'])assert.equal(fs.existsSync(path.join(f.stateRoot,directory)),false)
 })
+test('after compaction the session is reminded of its chat name and rooms',t=>{
+  const f=noticeFixture(t),store=createStore({root:f.chats,projectRoot:f.project,stateRoot:f.stateRoot})
+  store.createRoom({room:'venue-build',title:'venue-build'})
+  const client={runtime:'claude',id:'11111111-1111-4111-8111-111111111111',profileHome:f.profile,clientPid:4242,clientStart:'fixture',endpoint:'/fixture/socket'}
+  store.join({room:'venue-build',agent:'venue-build-orchestrator',session:{...client,conversationId:CONVERSATION}})
+  const out=JSON.parse(f.run([],start(f,'compact')))
+  assert.equal(out.systemMessage,'agent-chat: after compaction, this session is still venue-build-orchestrator in room venue-build. Use that name to post, and read inbox there when mail wakes you.')
+  assert.equal(JSON.parse(f.run([],{...start(f,'compact'),session_id:OTHER})).systemMessage,undefined,'another conversation gets nothing')
+  for(const directory of ['hook-tasks','lifecycle'])assert.equal(fs.existsSync(path.join(f.stateRoot,directory)),false,'compact still registers nothing')
+})
+test('a failed start is retried at the next three prompts, quietly, then left to agent-chat calls',t=>{
+  const f=noticeFixture(t),launch='22222222-2222-4222-8222-222222222222'
+  const marker=path.join(f.stateRoot,'lifecycle-failures',`pending-${launch}.json`),gate=path.join(noticeDirectory(f.stateRoot),`session-${launch}.registration.gate`)
+  fs.mkdirSync(path.dirname(marker),{mode:0o700})
+  fs.writeFileSync(marker,JSON.stringify({stage:'project',at:new Date().toISOString(),tries:0}),{mode:0o600});fs.writeFileSync(gate,'',{mode:0o600})
+  const prompt={session_id:CONVERSATION,cwd:f.project,hook_event_name:'UserPromptSubmit',prompt:'hi'}
+  // A missing profile fails the same step on any machine. Without it the step depends on whether a
+  // Claude process runs above the test, and an unsupported install clears the marker by design.
+  const env={CLAUDE_CODE_SESSION_ID:launch,CLAUDE_CONFIG_DIR:path.join(f.dir,'missing-profile')}
+  for(let i=1;i<=3;i++){
+    assert.doesNotMatch(f.run(['--flags'],prompt,env),/register/,'a failed retry adds nothing to the prompt')
+    assert.equal(JSON.parse(fs.readFileSync(marker,'utf8')).tries,i)
+  }
+  f.run(['--flags'],prompt,env)
+  assert.equal(fs.existsSync(marker),false);assert.equal(fs.existsSync(gate),false)
+  assert.ok(fs.readFileSync(path.join(f.stateRoot,'lifecycle-failures','history.jsonl'),'utf8').trim().split('\n').length>=3,'each retry is in the history')
+})
 test('fork follows the /clear rule: new conversation, no rooms inherited',t=>{
   assert.deepEqual(sessionStartPlan({source:'startup'}),{source:'startup',restore:true,orphans:true})
   assert.deepEqual(sessionStartPlan({source:'fork'}),{source:'fork',restore:true,orphans:false},'the lifecycle records fork itself')
@@ -152,21 +179,35 @@ test('a failed registration says which step failed and records it for diagnosis'
   const f=noticeFixture(t)
   const out=JSON.parse(f.run([],start(f,'startup')))
   // Under a native Claude Code the fixture fails at its fake socket; with none above it (CI), at the install check.
-  assert.match(out.systemMessage,/Agent-chat could not register this tab: (this tab's messaging socket failed its safety check|the process check \(ps, lsof\) failed or timed out)\. Rooms joined before this start need join_room again; their mail is kept\.|^Agent-chat needs the native Claude Code install/)
+  assert.match(out.systemMessage,/Agent-chat could not register this tab: (this tab's messaging socket failed its safety check|the process check \(ps, lsof\) failed or timed out)\. It tries again at the next prompt, and any agent-chat call registers it too; mail is kept\.|^Agent-chat needs the native Claude Code install/)
   const record=JSON.parse(fs.readFileSync(path.join(f.stateRoot,'lifecycle-failures','latest.json'),'utf8'))
   assert.ok(['socket','process','install'].includes(record.stage))
   assert.equal(fs.statSync(path.join(f.stateRoot,'lifecycle-failures','latest.json')).mode&0o777,0o600)
 })
-test('registration retries once after a short pause, then reports the failure',async()=>{
+test('registration tries three times a short pause apart, then reports the failure',async()=>{
   let calls=0
-  assert.equal(await registerWithRetry(()=>{if(++calls===1)throw Error('busy');return 'ok'},{delayMs:1,started:performance.now()}),'ok')
-  assert.equal(calls,2)
+  assert.equal(await registerWithRetry(()=>{if(++calls<3)throw Error('busy');return 'ok'},{delayMs:1,started:performance.now()}),'ok')
+  assert.equal(calls,3)
   calls=0
   await assert.rejects(registerWithRetry(()=>{calls++;throw Error('down')},{delayMs:1,started:performance.now()}),/down/)
-  assert.equal(calls,2)
+  assert.equal(calls,3)
+  calls=0
+  await assert.rejects(registerWithRetry(()=>{calls++;throw Error('late')},{delayMs:1,started:performance.now()-60_000}),/late/)
+  assert.equal(calls,1,'no new attempt once the hook has run past its budget')
 })
 
 test('an unsupported Claude install is named plainly, without the rejoin advice',()=>{
   assert.match(registrationFailureLine('install'),/^Agent-chat needs the native Claude Code install \(~\/\.local\/bin\/claude\); this one can't be registered or woken\./)
   assert.doesNotMatch(registrationFailureLine('install'),/join_room/)
+})
+test('restore tries again while the replaced tab is still running, and keeps what came back',async()=>{
+  const {restoreUntilFree}=await import('./claude-session-hook.mjs')
+  const results=[{restored:[{room:'a',agent:'PM'}],conflicts:[{room:'b',agent:'PM'}]},{restored:[],conflicts:[{room:'b',agent:'PM'}]},{restored:[{room:'b',agent:'PM'}],conflicts:[]}]
+  let calls=0;const sleeps=[]
+  const out=await restoreUntilFree(()=>results[calls++],{sleep:async ms=>{sleeps.push(ms)}})
+  assert.equal(calls,3);assert.deepEqual(sleeps,[750,750])
+  assert.deepEqual(out.restored.map(r=>r.room),['a','b']);assert.deepEqual(out.conflicts,[])
+  let n=0
+  const stuck=await restoreUntilFree(()=>(n++,{restored:[],conflicts:[{room:'b',agent:'PM'}]}),{sleep:async()=>{}})
+  assert.equal(n,8);assert.equal(stuck.conflicts.length,1)
 })

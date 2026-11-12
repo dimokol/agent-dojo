@@ -43,8 +43,14 @@ export function processIdentities(pids, { executor = execFileSync, signal = proc
   return result
 }
 
+// This process's own start time can't change, so it is looked up once: every native call used to
+// spawn ps for it, and a ps that timed out on a busy machine failed the whole call.
+let ownIdentity = null
 export function processIdentity(pid) {
-  return processIdentities([pid]).get(pid) ?? null
+  if (pid === process.pid && ownIdentity) return ownIdentity
+  const identity = processIdentities([pid]).get(pid) ?? null
+  if (pid === process.pid && identity) ownIdentity = identity
+  return identity
 }
 
 export function isProcessLive(identity) {
@@ -151,9 +157,11 @@ export function inferNativeSession(meta, env = process.env, { pid = process.pid,
   }
   if (!UUID.test(env.CLAUDE_CODE_SESSION_ID ?? '') || !env.CLAUDE_CODE_MESSAGING_SOCKET) return null
   const profileHome = profile(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'))
-  const identities = processIdentities([pid, ppid])
+  const known = pid === process.pid ? ownIdentity : null
+  const identities = processIdentities(known ? [ppid] : [pid, ppid])
   const parent = identities.get(ppid)
-  const server = identities.get(pid)
+  const server = known ?? identities.get(pid)
+  if (pid === process.pid && server && !ownIdentity) ownIdentity = server
   const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET
   let isClaudeParent = false, executable, unknown = false
   try {

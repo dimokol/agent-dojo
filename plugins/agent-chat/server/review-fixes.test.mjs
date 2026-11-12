@@ -96,7 +96,7 @@ test('L2: a failed registration after /clear says the earlier conversation keeps
   assert.doesNotMatch(line, /join_room again/)
   assert.match(line, /conversation before \/clear, and that conversation's rooms keep ringing here/)
   // A fork is a new process with no earlier record (round 2, R10).
-  for (const source of ['startup', 'fork']) assert.match(registrationFailureLine('process', source), /need join_room again/)
+  for (const source of ['startup', 'fork']) assert.match(registrationFailureLine('process', source), /tries again at the next prompt/)
 })
 
 test('L3: a lock left by a killed hook is taken over once it is stale', async t => {

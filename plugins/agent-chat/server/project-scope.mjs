@@ -5,10 +5,10 @@ import { execFileSync } from 'node:child_process'
 // strict: a git that timed out or was killed throws instead of falling back to
 // the directory itself, which for a worktree or subdirectory is the wrong root.
 // Presence checks use it; a wrong root there would read a live tab as closed.
-export function projectRoot(start, { strict = false } = {}) {
+export function projectRoot(start, { strict = false, timeoutMs = 3000 } = {}) {
   try {
     const common = execFileSync('git', ['-C', start, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim()
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: timeoutMs }).trim()
     if (path.basename(common) === '.git') return fs.realpathSync(path.dirname(common))
     return fs.realpathSync(start)
   } catch (error) {

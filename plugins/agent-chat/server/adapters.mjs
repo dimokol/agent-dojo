@@ -172,9 +172,11 @@ function writeClaude(session, content, { connect, timeoutMs, signal }) {
         const frame = { type: 'user', uuid: id, msg_id: id,
           from: 'agent-chat', message: { content }, priority: 'next' }
         attempted = true
-        socket.write(JSON.stringify(frame) + '\n', error => finish({ status: 'pending',
-          detail: error ? 'Socket write uncertain; retain messages.' :
-            'Peer frame written; receiver policy and receipt unconfirmed. Await agent_chat acknowledgement.' }))
+        // "rung": the tab's socket took the notice. 361 of 504 posts read "pending ... unconfirmed"
+        // here, and senders took a working ring for a failure. The read receipt still follows.
+        socket.write(JSON.stringify(frame) + '\n', error => finish(error
+          ? { status: 'pending', detail: 'Socket write uncertain; retain messages.' }
+          : { status: 'rung', detail: 'The tab was rung and reads its inbox on its next turn. Nothing else to do; a reply wakes you.' }))
       })
     } catch { finish({ status: 'pending', detail: 'Session socket unavailable; retain messages.' }) }
   })

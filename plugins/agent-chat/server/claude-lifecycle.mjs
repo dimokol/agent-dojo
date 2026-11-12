@@ -17,8 +17,11 @@ const SOURCE = new Set(['startup', 'resume', 'clear', 'fork', 'compact'])
 // a second. They still fail closed; they only stop failing under load. The
 // MCP server re-checks on every call and blocks while it does, so it keeps
 // short bounds: a timeout there reads as unknown and keeps mail and membership.
-const GIT_TIMEOUT_MS = 5000
-const HOOK_BOUNDS = { psTimeoutMs: 10_000, lsofTimeoutMs: 5000 }, CALL_BOUNDS = { psTimeoutMs: 2000, lsofTimeoutMs: 1500 }
+// 5 s still failed: on 2026-11-06 and 11-10 restored tabs at load 18 to 45 lost git's race and
+// stayed unregistered. The hook has 60 s; a slow git now costs start-up time, not the tab.
+const GIT_TIMEOUT_MS = 10_000
+const HOOK_BOUNDS = { psTimeoutMs: 10_000, lsofTimeoutMs: 5000 }
+export const CALL_BOUNDS = { psTimeoutMs: 2000, lsofTimeoutMs: 1500 }
 function unavailable(stage) {
   return Object.assign(new Error('Agent-chat Claude lifecycle metadata is unavailable'), { code: 'CHAT_CLAUDE_LIFECYCLE_UNAVAILABLE', ...(stage ? { stage } : {}) })
 }
@@ -207,6 +210,32 @@ export function observeClaudeLifecycle(input, env = process.env, {
       if (temporary) fs.unlinkSync(temporary)
     }
   } catch { throw unavailable(stage) }
+}
+// Claude Code keeps <profile>/sessions/<pid>.json for each running CLI, naming its current
+// conversation. A tab whose start-up registration failed uses it to register later, from its MCP
+// server. It is Claude's private file, so this is a fallback only: any doubt returns null.
+// clientStart is ps's start time in UTC; Claude writes procStart in the same form. A file left by
+// an earlier process that had this PID fails it.
+export function currentClaudeConversation(profileHome, clientPid, endpoint, clientStart) {
+  try {
+    if (!Number.isSafeInteger(clientPid) || clientPid <= 0) return null
+    const file = path.join(canonicalDirectory(profileHome), 'sessions', `${clientPid}.json`)
+    const stat = fs.lstatSync(file)
+    if (!stat.isFile() || stat.uid !== process.getuid() || stat.mode & 0o022 || stat.size > 65536) return null
+    const row = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (row?.pid !== clientPid || !UUID.test(row.sessionId ?? '')) return null
+    const squash = value => String(value).replace(/\s+/g, ' ').trim()
+    if (typeof clientStart !== 'string' || typeof row.procStart !== 'string' || squash(row.procStart) !== squash(clientStart)) return null
+    if (typeof row.messagingSocketPath === 'string' && typeof endpoint === 'string' &&
+        fs.realpathSync(row.messagingSocketPath) !== fs.realpathSync(endpoint)) return null
+    return row.sessionId
+  } catch { return null }
+}
+// A failed start leaves a marker and a prompt gate for its launch; any later registration clears them.
+export function clearRegistrationRetry(stateRoot, launch) {
+  if (!UUID.test(launch ?? '')) return
+  for (const file of [path.join(stateRoot, 'lifecycle-failures', `pending-${launch}.json`), path.join(stateRoot, 'notices', `session-${launch}.registration.gate`)])
+    try { fs.unlinkSync(file) } catch {}
 }
 // null is a definite answer: not this CLI process, its socket is gone, or it
 // has no record. A check that could not run (ps or lsof failed, a damaged or

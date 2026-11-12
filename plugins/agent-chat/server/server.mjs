@@ -12,7 +12,7 @@ import { tools } from './tools.mjs'
 import { isBroadcast } from './message-policy.mjs'
 import { inferNativeSession, processIdentities, processIdentity, codexProfileHome, isProcessLive } from './native-session.mjs'
 import { projectRoot } from './project-scope.mjs'
-import { resolveClaudeConversation } from './claude-lifecycle.mjs'
+import { resolveClaudeConversation, observeClaudeLifecycle, claudeLifecycleAncestors, currentClaudeConversation, clearRegistrationRetry, CALL_BOUNDS } from './claude-lifecycle.mjs'
 import { participantId } from './participant-identity.mjs'
 import { claudeFailureFlags } from './claude-failure-flags.mjs'
 import { readNativeLabel } from './notices.mjs'
@@ -22,11 +22,14 @@ const { createStore, defaultChatRoot } = await import('./store.mjs')
 const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
 
 export function createService({ store, adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, isLive=isProcessLive,
+  observeLifecycle=observeClaudeLifecycle, currentConversation=currentClaudeConversation, reconcileEveryMs=10_000,
   // With the check off every version passes, so the version is never looked up: for a prerelease
   // tab that lookup throws, which would show a wakeable tab as not wakeable.
   claudeVerified = session => versionCheckOff() || isVerifiedVersion(sessionClaudeVersion(session), { stateRoot: store.stateRoot }) }) {
   const controller = createController({ store, adapters })
   const bindings = new Map()
+  // Mail the inbox cap held back, per room and alias, until written() settles it.
+  const heldBack = new Map()
   const cursors = new Map()
   const waits = new Map()
   let nativeSession = null
@@ -66,17 +69,25 @@ export function createService({ store, adapters = createAdapters(), env = proces
   const messageView = ({ message_id, id, ts, from, to, channel, reply_to, message, fyi, urgent }) => ({ message_id: message_id ?? id, ts, from, to,
     ...(channel && channel !== 'main' ? { channel } : {}), ...(reply_to ? { reply_to } : {}), message, ...(fyi ? { fyi } : {}), ...(urgent ? { urgent } : {}) })
   // An accepted doorbell needs no explanation; anything else keeps its reason.
-  const deliveryView = rows => rows.map(({ agent, transport, detail }) => ({ agent, transport, ...(transport === 'accepted' ? {} : { detail }) }))
-  const reconcile = () => {
-    const memberships = store.memberships().filter(member => member.joined && member.session.runtime !== 'codex' && member.session.serverPid)
+  const deliveryView = rows => rows.map(({ agent, transport, detail }) => ({ agent, transport, ...(['accepted', 'rung'].includes(transport) ? {} : { detail }) }))
+  // A ps of every member on every call was the costliest part of a call, so a pass runs at most
+  // once per reconcileEveryMs. A Claude member restored at tab start or joined by its first post
+  // has no server PID yet; its tab's PID decides, or closed tabs stayed joined for good.
+  let reconciledAt = -Infinity
+  const reconcile = ({ force = false } = {}) => {
+    const started = performance.now()
+    if (!force && started - reconciledAt < reconcileEveryMs) return
+    const checked = member => member.joined && member.session.runtime !== 'codex' &&
+      (member.session.serverPid || (member.session.runtime === 'claude' && member.session.clientPid))
+    const memberships = store.memberships().filter(checked)
     let snapshot
-    try { snapshot = processIdentities(memberships.flatMap(({session}) => [session.serverPid, ...(session.runtime === 'claude' ? [session.clientPid] : [])])) }
+    try { snapshot = processIdentities(memberships.flatMap(({session}) => [...(session.serverPid ? [session.serverPid] : []), ...(session.runtime === 'claude' ? [session.clientPid] : [])])) }
     catch { return /* Unknown process presence must not deactivate a live peer. */ }
+    reconciledAt = started
     const alive = (pid, start) => snapshot.get(pid)?.start === start
     for (const member of memberships) {
       const session = member.session
-      if (!member.joined || !session.serverPid) continue
-      if (!alive(session.serverPid, session.serverStart) ||
+      if ((session.serverPid && !alive(session.serverPid, session.serverStart)) ||
           (session.runtime === 'claude' && !alive(session.clientPid, session.clientStart))) store.deactivateSession(session.id, session)
     }
   }
@@ -89,22 +100,62 @@ export function createService({ store, adapters = createAdapters(), env = proces
     if (member.session.clientPid === nativeSession.clientPid && member.session.clientStart === nativeSession.clientStart) return false
     try { return isLive({ pid: member.session.clientPid, start: member.session.clientStart }) } catch { return 'unknown' }
   }
-  const observeContext = meta => {
-    const session = inferSession(meta, env)
+  // The tab's process can't change under this server (the server exits with it), so its ps and lsof
+  // check runs once and later calls reuse it. Each call used to run them, and one that timed out on
+  // a busy machine failed the call with the generic error.
+  let trustedParent = null
+  const cachedAncestors = pid => {
+    if (trustedParent?.pid === pid) return [trustedParent]
+    const rows = claudeLifecycleAncestors(pid, CALL_BOUNDS)
+    if (rows[0]?.trusted && rows[0].pid === pid) trustedParent = rows[0]
+    return rows
+  }
+  const conversationOf = session => resolveConversation(session, { stateRoot: store.stateRoot, projectRoot: store.projectRoot, ancestors: cachedAncestors })
+  // A tab whose start-up registration failed (git or ps timing out while many tabs restore at once)
+  // registers here instead, as its SessionStart hook would have. Claude's own record of the
+  // process names its current conversation. At most one attempt per five seconds.
+  let registeredAt = -Infinity
+  const selfRegister = () => {
+    if (env.AGENT_CHAT_VERIFY_CHILD === '1' || nativeSession?.runtime !== 'claude') return false
+    const started = performance.now()
+    if (started - registeredAt < 5000) return false
+    registeredAt = started
+    try {
+      const conversation = currentConversation(nativeSession.profileHome, nativeSession.clientPid, nativeSession.endpoint, nativeSession.clientStart)
+      if (!conversation) return false
+      const observation = observeLifecycle({ session_id: conversation, source: 'resume', hook_event_name: 'SessionStart', cwd: store.projectRoot }, env,
+        { stateRoot: store.stateRoot, projectRoot: store.projectRoot, scope: () => store.projectRoot })
+      if (!observation) return false
+      const result = store.restoreClaude({ ...observation, session: validateSession(observation.session) }, isLive)
+      for (const room of new Set((result?.restored ?? []).map(row => row.room))) scheduleRoom(room)
+      clearRegistrationRetry(store.stateRoot, nativeSession.id)
+      return true
+    } catch { return false }
+  }
+  const observeContext = (meta, { heal = false } = {}) => {
+    const reuse = nativeSession?.runtime === 'claude' && meta?.['x-codex-turn-metadata'] === undefined
+    const session = reuse ? (({ conversationId, claudeVersion, ...rest }) => rest)(nativeSession) : inferSession(meta, env)
     if (!session) {
       if (nativeSession?.runtime === 'codex') throw new Error('Native Codex metadata required on every call')
       return
     }
     if (nativeSession && (session.id !== nativeSession.id || session.runtime !== nativeSession.runtime)) throw new Error('Native session changed on this MCP connection')
     const previousConversation=nativeSession?.conversationId
-    nativeSession = validateSession(session)
-    const memberships=store.memberships()
+    const previousVersion=reuse?nativeSession.claudeVersion:undefined
+    nativeSession = validateSession({...session,...(previousVersion?{claudeVersion:previousVersion}:{})})
+    let memberships=store.memberships()
     if(nativeSession.runtime==='claude'&&env.AGENT_CHAT_VERIFY_CHILD!=='1') {
-      let conversationId=null
-      try {conversationId=resolveConversation(nativeSession,{stateRoot:store.stateRoot,projectRoot:store.projectRoot})} catch { /* Unknown: the guard below asks for a retry. */ }
-      if(!conversationId&&(previousConversation||memberships.some(member=>member.session.runtime==='claude'&&member.session.id===session.id&&member.session.profileHome===session.profileHome&&member.session.conversationId))) {
+      let conversationId=null,unknown=false
+      try {conversationId=conversationOf(nativeSession)} catch { unknown=true /* The guard below asks for a retry. */ }
+      const expected=()=>previousConversation||memberships.some(member=>member.session.runtime==='claude'&&member.session.id===session.id&&member.session.profileHome===session.profileHome&&member.session.conversationId)
+      // Only a definite "no record" registers here; a check that timed out may hide a good record.
+      if(!conversationId&&!unknown&&expected()&&heal&&selfRegister()) {
+        try {conversationId=conversationOf(nativeSession)} catch {}
+        memberships=store.memberships()
+      }
+      if(!conversationId&&expected()) {
         bindings.clear()
-        throw Error('Native Claude conversation is unavailable; retry after lifecycle registration')
+        throw Error('Native Claude registration is still pending after a busy start; it is retried on every call; retry this call in a few seconds')
       }
       if(conversationId) {
         if(previousConversation!==conversationId) bindings.clear()
@@ -117,6 +168,12 @@ export function createService({ store, adapters = createAdapters(), env = proces
           (nativeSession.conversationId && (member.session.conversationId??member.session.id)!==nativeSession.conversationId)) continue
       // A recorded version belongs to the process that recorded it.
       const sameProcess=member.session.clientPid===nativeSession.clientPid&&member.session.clientStart===nativeSession.clientStart
+      // Already joined from this server: nothing to write. Every call used to rewrite each membership.
+      const bound=bindings.get(JSON.stringify([member.room, member.agent]))
+      const thisServer=member.session.serverPid===undefined||(self&&member.session.serverPid===self.pid&&member.session.serverStart===self.start)
+      if(member.joined&&bound?.participantId===member.participant_id&&thisServer&&member.session.id===nativeSession.id&&
+        member.session.clientPid===nativeSession.clientPid&&member.session.clientStart===nativeSession.clientStart&&
+        (member.session.conversationId??null)===(nativeSession.conversationId??null))continue
       // Unknown keeps the rooms where they are; the next call checks again.
       if(heldElsewhere(member))continue
       store.join({ room: member.room, agent: member.agent, session: {...(sameProcess&&member.session.claudeVersion?{claudeVersion:member.session.claudeVersion}:{}),...nativeSession} })
@@ -172,7 +229,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
   setImmediate(async () => {
     if (closed) return
     if(env.CLAUDE_CODE_SESSION_ID&&env.AGENT_CHAT_VERIFY_CHILD!=='1') {
-      try {reconcile();observeContext()} catch { /* Native calls can report identity or storage problems without crashing startup. */ }
+      try {reconcile({force:true});observeContext()} catch { /* Native calls can report identity or storage problems without crashing startup. */ }
     }
     let rooms
     try { rooms = new Set(store.memberships().map(member => member.room)) }
@@ -190,7 +247,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
       binding=[...bindings.entries()].find(([key,value])=>JSON.parse(key)[0]===room&&value.participantId===member?.participant_id)?.[1]
     }
     const {sessionId,participantId: id}=binding??{}
-    if (!sessionId) throw new Error('join_room on this MCP connection first')
+    if (!sessionId) throw new Error(NOT_JOINED)
     let member
     try { member = store.assertMember(room, agent, sessionId,id) }
     catch (error) { if (allowDamagedState && error.code === 'CHAT_STATE_DAMAGED') return {room,agent,sessionId}; throw error }
@@ -215,6 +272,27 @@ export function createService({ store, adapters = createAdapters(), env = proces
     const value = { sessionId: member.session.id, participantId: member.participant_id }
     for (const alias of new Set([member.agent, suggested])) if (typeof alias === 'string') bindings.set(key(room, alias), value)
   }
+  // A native session's room tools work without a join first, as post always did. A name this tab
+  // doesn't hold in a room where it is joined (a tab name, a remembered old alias) addresses its own
+  // identity there; a name another session holds is refused later by identity().
+  const ensureJoined = async (room, agent) => {
+    if (!nativeSession || typeof room !== 'string' || typeof agent !== 'string') return
+    identifier(room, 'room'); identifier(agent, 'agent')
+    if (bindings.has(key(room, agent))) return
+    const own = [...bindings.entries()].filter(([bindingKey]) => JSON.parse(bindingKey)[0] === room)
+    if (own.length) {
+      const lower = agent.toLowerCase()
+      const held = store.memberships().some(member => member.agent.toLowerCase() === lower) || store.participants().some(row => row.name?.toLowerCase() === lower)
+      if (!held) bindings.set(key(room, agent), own[0][1])
+      return
+    }
+    // Only a room this session never had a row in: a left, closed or cleared membership, or a name
+    // someone else holds, stays for an explicit join_room to decide (a /clear must not inherit).
+    const mine = participantId(nativeSession)
+    if (store.memberships().some(member => member.room === room && (member.participant_id === mine || member.agent === agent))) return
+    await checkCodexProfile()
+    bind(room, joinCreating({ room, agent: sessionName(nativeSession, agent), session: nativeSession }, room), agent)
+  }
   // After a resume the model need not remember its room or alias.
   const ownIdentity = () => {
     if (new Set([...bindings.values()].map(value => value.participantId)).size > 1) throw new Error('invalid rename_session target; pass room and agent for one of several identities')
@@ -222,7 +300,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
       const [room, agent] = JSON.parse(bindingKey)
       try { return identity(room, agent) } catch (error) { if (error.message !== 'session is not joined as this agent') throw error }
     }
-    throw new Error('join_room on this MCP connection first')
+    throw new Error(NOT_JOINED)
   }
   // Presence checks are asynchronous and the report reads under the store
   // lock, so liveness is settled first. Unknown presence is not wakeable;
@@ -290,13 +368,20 @@ export function createService({ store, adapters = createAdapters(), env = proces
       }
     },
     written(name, args, result, writtenAt = performance.now()) {
-      if (closed || name !== 'inbox' || !Array.isArray(result) || !result.length) return
+      if (closed || name !== 'inbox' || !Array.isArray(result)) return
+      result = result.filter(item => typeof item?.message_id === 'string')
+      if (!result.length) return
       let bound
       try {
         bound = identity(args.room, args.agent)
         store.updateDelivery({ ...bound, message_ids: result.map(item => item.message_id), status: 'delivered' })
       } catch (error) { if (error.message === 'session is not joined as this agent') return; throw error }
       for (const item of result) delivered.set(JSON.stringify([args.room, args.agent, item.message_id]), { identity: bound, sessionId: bound.sessionId, messageId: item.message_id, writtenAt })
+      // A held-back message still reads as rung, and a rung receipt blocks new rings for 15 minutes.
+      // Back to pending, so the next post rings this tab again if it stops before reading the rest.
+      const rest = heldBack.get(key(args.room, args.agent)) ?? []
+      heldBack.delete(key(args.room, args.agent))
+      if (rest.length) try { store.updateDelivery({ ...bound, message_ids: rest, status: 'pending' }) } catch {}
     },
     async call(name, args = {}, requestId, meta, arrivedAt = performance.now()) {
       if (closed) throw new Error('MCP connection is closed')
@@ -305,7 +390,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
   }
   async function handle(name, args, requestId, meta, arrivedAt) {
     {
-      try { reconcile(); observeContext(meta); confirmDelivered(arrivedAt) }
+      try { reconcile(); observeContext(meta, { heal: true }); confirmDelivered(arrivedAt) }
       catch (error) {
         if (error.code !== 'CHAT_STATE_DAMAGED' || name !== 'post') throw error
         const bound = identity(args.room, args.from, true)
@@ -337,6 +422,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
         }
         case 'rename_session': {
           if ((args.room === undefined) !== (args.agent === undefined)) throw new Error('invalid rename_session target; pass room and agent together or neither')
+          if (args.room !== undefined) await ensureJoined(args.room, args.agent)
           const bound=args.room === undefined ? ownIdentity() : identity(args.room,args.agent)
           const result=store.renameSession({...bound,name:args.name,source:'explicit'})
           for(const [bindingKey,value] of [...bindings])if(value.participantId===bound.participantId) {
@@ -372,17 +458,26 @@ export function createService({ store, adapters = createAdapters(), env = proces
           } catch { delivery = [{ agent: null, transport: 'pending', detail: 'Delivery did not run; the post is stored and is routed on the next post or read in this room.' }] }
           return { ...result, delivery }
         }
-        case 'inbox': return store.pending(identity(args.room, args.agent)).map(messageView)
+        case 'inbox': {
+          await ensureJoined(args.room, args.agent)
+          const raw = store.pending(identity(args.room, args.agent)), capped = capInbox(raw.map(messageView))
+          if (capped.at(-1)?.more !== undefined) heldBack.set(key(args.room, args.agent),
+            raw.slice(capped.length - 1).filter(record => ['notified', 'dispatching'].includes(record.delivery.status)).map(record => record.id))
+          else heldBack.delete(key(args.room, args.agent))
+          return capped
+        }
         case 'ack': {
+          await ensureJoined(args.room, args.agent)
           const result = args.handled ? store.updateDelivery({ ...identity(args.room, args.agent), message_ids: args.message_ids, status: 'handled' }) : store.ack({ ...identity(args.room, args.agent), message_ids: args.message_ids })
           await controller.dispatch(args.room)
           return publicRows(result)
         }
         case 'delivery_status':
+          await ensureJoined(args.room, args.agent)
           identity(args.room, args.agent)
           {
-            const rows=publicRows(store.deliveryStatus({room: args.room, agent: args.agent}))
             const bound=identity(args.room,args.agent)
+            const rows=publicRows(store.deliveryStatus({room: args.room, agent: bound.agent}))
             const member=store.assertMember(args.room,bound.agent,bound.sessionId,bound.participantId)
             if(member.session.runtime==='claude') {
               for(const flag of claudeFailureFlags(store.stateRoot)) rows.push({room:args.room,agent:args.agent,status:'verification_failed',version:flag.version,reason:flag.message})
@@ -390,14 +485,14 @@ export function createService({ store, adapters = createAdapters(), env = proces
               // A check that could not run says nothing; only a definite absence is reported.
               let registered=env.AGENT_CHAT_VERIFY_CHILD==='1'||nativeSession?.runtime!=='claude'
               if(!registered)try{registered=!!resolveConversation(nativeSession,{stateRoot:store.stateRoot,projectRoot:store.projectRoot})}catch{registered=true}
-              if(!registered)rows.push({room:args.room,agent:args.agent,status:'not_registered',reason:'This tab has no restart registration; its start-up message says why. A /clear, /resume or new start registers it again; until then a restart needs join_room. Mail is kept.'})
+              if(!registered)rows.push({room:args.room,agent:args.agent,status:'not_registered',reason:'This tab has no restart registration yet; its start-up message says why. The next prompt or agent-chat call registers it. Mail is kept.'})
             }
             return rows
           }
         case 'members': return memberReport(args.room)
         case 'unread': return store.unreadReport()
-        case 'dismiss': return store.dismiss({ ...identity(args.room, args.agent), recipient: args.recipient, message_ids: args.message_ids })
-        case 'retry_delivery': return controller.retry(identity(args.room, args.agent), args.message_ids)
+        case 'dismiss': await ensureJoined(args.room, args.agent); return store.dismiss({ ...identity(args.room, args.agent), recipient: args.recipient, message_ids: args.message_ids })
+        case 'retry_delivery': await ensureJoined(args.room, args.agent); return controller.retry(identity(args.room, args.agent), args.message_ids)
         case 'wait':
           if (nativeSession) throw new Error('Native delivery replaces blocking wait; end your turn after posting')
           identity(args.room, args.me)
@@ -415,16 +510,48 @@ function packageVersion() {
   }
   return 'unknown'
 }
+// One inbox result once ran to 65,000 characters, more than a model reads in one tool result. The
+// oldest mail comes first; the rest waits for the next call, which confirms these as read.
+export function capInbox(messages, { maxChars = 24_000, maxMessages = 25 } = {}) {
+  const kept = []
+  let size = 0
+  for (const message of messages) {
+    const length = JSON.stringify(message).length
+    if (kept.length && (kept.length >= maxMessages || size + length > maxChars)) break
+    kept.push(message); size += length
+  }
+  const more = messages.length - kept.length
+  return more ? [...kept, { more, note: `${more} more unread; call inbox again after reading these.` }] : kept
+}
 // The fallback for an error whose text could carry a path or a record. It can't say whether a
 // post landed, so it says how to find out.
 export const FAILED = 'Agent-chat could not finish this call; details withheld. Mail already stored is kept: check history before posting again, or resend with the same idempotency_key.'
+// A check that timed out on a busy machine. It used to read as FAILED, and agents took the chat for broken.
+export const BUSY = 'Agent-chat timed out because the machine is busy (a process check or the state lock). Retry in a few seconds; before posting again check history, or resend with the same idempotency_key.'
+const NOT_JOINED = 'Not joined to this room from this tab; call join_room first. Your chat name can differ from the tab name; members lists the names in a room.'
+export function transientError(error) {
+  return ['CHAT_PRESENCE_UNAVAILABLE', 'CHAT_CLAUDE_LIFECYCLE_UNAVAILABLE'].includes(error?.code) ||
+    error?.errcode === 5 || /database is locked/.test(error?.message ?? '')
+}
+// What the client doesn't see stays here, private, so the next failure can be diagnosed. Two files
+// of 256 KB at most; a log that can't be written never fails the call.
+export function logWithheld(stateRoot, tool, error) {
+  try {
+    const file = path.join(stateRoot, 'errors.log')
+    try { if (fs.statSync(file).size > 262_144) fs.renameSync(file, file + '.1') } catch {}
+    const line = JSON.stringify({ at: new Date().toISOString(), tool: typeof tool === 'string' ? tool.slice(0, 40) : null,
+      code: typeof error?.code === 'string' ? error.code : null, message: String(error?.message ?? error).slice(0, 300) })
+    fs.appendFileSync(file, line + '\n', { mode: 0o600 })
+  } catch {}
+}
 function main() {
   if (process.env.AGENT_CHAT_DIR || process.env.AGENT_CHAT_PROJECT) throw new Error('Candidate supports inferred projects only; explicit legacy overrides need migration review')
   const root = process.env.AGENT_CHAT_ROOT || defaultChatRoot()
   // A git that times out must not bind this tab to the wrong project for its whole life: retry
-  // once, then fail visibly.
+  // once, then fail visibly. A failure here leaves the tab with no agent-chat at all, and 3 s
+  // lost that race while many tabs restored at once, so the bound is generous.
   let scope
-  try { scope = projectRoot(process.cwd(), { strict: true }) } catch { scope = projectRoot(process.cwd(), { strict: true }) }
+  try { scope = projectRoot(process.cwd(), { strict: true, timeoutMs: 10_000 }) } catch { scope = projectRoot(process.cwd(), { strict: true, timeoutMs: 10_000 }) }
   const store = createStore({ root, projectRoot: scope, stateRoot: process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat') })
   const service = createService({ store })
   const send = (id, result, callback) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n', callback)
@@ -453,8 +580,9 @@ function main() {
     } catch (error) {
       // Errors the caller can act on pass through. Each added one is a fixed text, so no path,
       // record or stack can reach the client through them.
-      const allowed = /^([Ii]nvalid [A-Za-z0-9 .;:_-]+|Unsupported runtime|message_ids required|room case variant conflicts with [A-Za-z0-9._-]+|recipient is joined; it reads its own mail|message not (open for this recipient|pending for this session)|message must contain 1 to 200000 characters|title must contain 1 to 200 characters|idempotency key reused with different message|name is owned by another session already joined or reserved|name is reserved for its previous owner|name collision with another owner|Use canonical name or explicitly rename this session|Register only your own native session|Native [A-Za-z0-9 .;:_-]+|join_room on this MCP connection first|session is not joined as this agent|agent alias [A-Za-z0-9 .;:_-]+|room (does not exist|already exists)|MCP connection is closed|unknown (tool|method)|unsafe (directory|file) ownership or permissions)$/
-      const message = error.code === 'CHAT_STATE_DAMAGED' ? 'Agent-chat delivery state is damaged; operator recovery required' : !error.code && allowed.test(error.message) ? error.message : FAILED
+      const allowed = /^([Ii]nvalid [A-Za-z0-9 .;:_-]+|Unsupported runtime|message_ids required|room case variant conflicts with [A-Za-z0-9._-]+|recipient is joined; it reads its own mail|message not (open for this recipient|pending for this session)|message must contain 1 to 200000 characters|title must contain 1 to 200 characters|idempotency key reused with different message|name is owned by another session already joined or reserved|name is reserved for its previous owner|name collision with another owner|Use canonical name or explicitly rename this session|Register only your own native session|Native [A-Za-z0-9 .;:_-]+|join_room on this MCP connection first|Not joined to this room from this tab; call join_room first[A-Za-z0-9 .;:_-]*|session is not joined as this agent|agent alias [A-Za-z0-9 .;:_-]+|room (does not exist|already exists)|MCP connection is closed|unknown (tool|method)|unsafe (directory|file) ownership or permissions)$/
+      const message = error.code === 'CHAT_STATE_DAMAGED' ? 'Agent-chat delivery state is damaged; operator recovery required' : !error.code && allowed.test(error.message) ? error.message : transientError(error) ? BUSY : FAILED
+      if (message === FAILED || message === BUSY) logWithheld(store.stateRoot, params?.name, error)
       send(id, { isError: true, content: [{ type: 'text', text: message }] })
     }
   })

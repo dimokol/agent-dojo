@@ -22,8 +22,8 @@ test('lost lifecycle resolution cannot rejoin an old conversation through its la
  store.restoreClaude({session:{...session,conversationId:fresh},source:'clear',previousConversationId:old},()=>true)
  assert.equal(store.memberships()[0].left_reason,'conversation_changed')
  conversation=null
- await assert.rejects(service.call('inbox',{room:'room',agent:'Reader'}),/conversation is unavailable/)
- await assert.rejects(service.call('post',{room:'room',from:'Reader',message:'must not post as the old conversation'}),/conversation is unavailable/)
+ await assert.rejects(service.call('inbox',{room:'room',agent:'Reader'}),/registration is still pending/)
+ await assert.rejects(service.call('post',{room:'room',from:'Reader',message:'must not post as the old conversation'}),/registration is still pending/)
  assert.equal(store.memberships()[0].joined,false)
  assert.equal(store.memberships()[0].session.conversationId,old)
  assert.deepEqual(store.history({room:'room'}),[])

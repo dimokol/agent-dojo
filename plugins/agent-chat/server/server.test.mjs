@@ -258,10 +258,11 @@ test('damaged metadata permits only a previously bound sender with matching nati
     assert.equal(retried.message_id, posted.message_id)
     assert.equal(retried.duplicate, true)
     await assert.rejects(s.first.call('post', { ...args, from: 'NewAlias' }, 5, meta), /join_room/)
-    await assert.rejects(s.first.call('post', args, 6), /Native identity required/)
+    // With cleanup throttled, the missing metadata is caught before the damaged state is read.
+    await assert.rejects(s.first.call('post', args, 6), /Native identity required|Native Codex metadata required on every call/)
     await assert.rejects(s.first.call('post', args, 7, {
       'x-codex-turn-metadata': { thread_id: '00000000-0000-4000-8000-000000000002' },
-    }), /Native identity required/)
+    }), /Native identity required|Native session changed on this MCP connection/)
     assert.equal(fs.readFileSync(s.store.statePath, 'utf8'), '{damaged')
     const rows = fs.readFileSync(path.join(s.store.roomsDir, 'room', 'chat.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
     assert.equal(rows.length, 1)
