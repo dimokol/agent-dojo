@@ -106,11 +106,14 @@ test('a failed start is retried at the next three prompts, quietly, then left to
   fs.mkdirSync(path.dirname(marker),{mode:0o700})
   fs.writeFileSync(marker,JSON.stringify({stage:'project',at:new Date().toISOString(),tries:0}),{mode:0o600});fs.writeFileSync(gate,'',{mode:0o600})
   const prompt={session_id:CONVERSATION,cwd:f.project,hook_event_name:'UserPromptSubmit',prompt:'hi'}
+  // A missing profile fails the same step on any machine. Without it the step depends on whether a
+  // Claude process runs above the test, and an unsupported install clears the marker by design.
+  const env={CLAUDE_CODE_SESSION_ID:launch,CLAUDE_CONFIG_DIR:path.join(f.dir,'missing-profile')}
   for(let i=1;i<=3;i++){
-    assert.doesNotMatch(f.run(['--flags'],prompt,{CLAUDE_CODE_SESSION_ID:launch}),/register/,'a failed retry adds nothing to the prompt')
+    assert.doesNotMatch(f.run(['--flags'],prompt,env),/register/,'a failed retry adds nothing to the prompt')
     assert.equal(JSON.parse(fs.readFileSync(marker,'utf8')).tries,i)
   }
-  f.run(['--flags'],prompt,{CLAUDE_CODE_SESSION_ID:launch})
+  f.run(['--flags'],prompt,env)
   assert.equal(fs.existsSync(marker),false);assert.equal(fs.existsSync(gate),false)
   assert.ok(fs.readFileSync(path.join(f.stateRoot,'lifecycle-failures','history.jsonl'),'utf8').trim().split('\n').length>=3,'each retry is in the history')
 })
