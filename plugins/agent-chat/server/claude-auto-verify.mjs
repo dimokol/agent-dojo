@@ -24,10 +24,16 @@ function finalObject(stdout) {
   const start=stdout.lastIndexOf('\n{\n')
   return JSON.parse(start>=0?stdout.slice(start+1):stdout.trim())
 }
-// Only the verifier's own enumerated stage and code are kept, never free text.
+// Only the verifier's own enumerated stage and code are kept, never free text. Its screen flags
+// (trust screen seen, input prompt seen, ...) are kept too, as true/false values only, so a
+// failed startup shows which screen Claude was on.
 function safeFailure(proof) {
   const {stage,code}=proof?.failure??{}
-  return /^[a-z_]{1,64}$/.test(stage??'')&&/^[A-Z0-9_]{1,64}$/.test(code??'')?{stage,code}:null
+  if(!/^[a-z_]{1,64}$/.test(stage??'')||!/^[A-Z0-9_]{1,64}$/.test(code??''))return null
+  const flags=proof?.terminalDiagnostics
+  const terminal=Object.fromEntries(Object.entries(flags&&typeof flags==='object'?flags:{})
+    .filter(([key,value])=>/^[A-Za-z]{1,40}$/.test(key)&&typeof value==='boolean').slice(0,32))
+  return Object.keys(terminal).length?{stage,code,terminal}:{stage,code}
 }
 function unavailable() {return Object.assign(Error('Claude automatic verification state unavailable; operator recovery required'),{code:'CHAT_AUTO_VERIFY_UNAVAILABLE'})}
 function location(version,stateRoot=ROOT,create=false) {
