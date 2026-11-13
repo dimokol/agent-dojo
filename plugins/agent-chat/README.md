@@ -154,7 +154,8 @@ stays in the inbox either way. With `AGENT_CHAT_VERSION_CHECK=on` (any value but
 on), the first start of each new Claude Code version runs a two-turn check in the background and
 holds wake-ups for that version until it passes. To run it by hand, run
 `node ~/.claude/plugins/cache/dimokol/agent-chat/<version>/server/verify-claude.mjs --run` from a
-repository's root folder; it needs `/usr/bin/python3`.
+repository's root folder that Claude already trusts; it needs `/usr/bin/python3`. In a folder
+Claude hasn't trusted yet, it stops at the trust screen with `NATIVE_FOLDER_UNTRUSTED`.
 
 ## Troubleshooting
 

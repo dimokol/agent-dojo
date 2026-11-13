@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { resumedTranscriptProof, resumeCaseEnv, resumeState, removeProbeConversation } from './claude-verification-runtime.mjs'
+import { resumedTranscriptProof, resumeCaseEnv, resumeState, removeProbeConversation, terminalText, folderTrustPrompt } from './claude-verification-runtime.mjs'
 const targetId = '12345678-1234-1234-1234-123456789abc'
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owned-resume-proof-'))
@@ -75,4 +75,23 @@ test('a probe removes only its own conversation files, by exact ID', t => {
   assert.deepEqual(fs.readdirSync(project), [`${other}.jsonl`])
   assert.deepEqual(fs.readdirSync(path.join(configHome, 'session-env')), [other])
   assert.throws(() => removeProbeConversation({ cwd, configHome, ids: ['../../x'] }), /INVALID_OWNED_PROBE_ID/)
+})
+
+// Bytes as Claude 2.1.322 and 2.1.323 print the folder-trust screen: each word is placed with a
+// cursor-column move (ESC[<n>G) and the screen has no spaces between words.
+const trustScreen = '\x1b[2G\x1b[38;2;255;193;7m\x1b[1mAccessing\x1b[12Gworkspace:\x1b[22m\x1b[39m\r\r\n\r\r\n' +
+  '\x1b[2G\x1b[1m/private/owned/My\x1b[19GProject\x1b[22m\r\r\n\r\r\n' +
+  '\x1b[2GQuick\x1b[8Gsafety\x1b[15Gcheck:\x1b[22GIs\x1b[25Gthis\x1b[30Ga\x1b[32Gproject\x1b[40Gyou\x1b[44Gcreated\x1b[52Gor\x1b[55Gone\x1b[59Gyou\x1b[63Gtrust?\r\r\n' +
+  '\x1b[2G\x1b]8;id=zaxmda;https://code.claude.com/docs/en/security\x07Security guide\x1b]8;;\x07\r\r\n' +
+  '\x1b[2G\x1b[38;2;177;185;249m❯\x1b[4GNo,\x1b[8Gexit\x1b[39m\r\r\n\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\r\r\n' +
+  '\x1b[2G\x1b[38;2;153;153;153mEnter\x1b[8Gto\x1b[11Gconfirm\x1b[39m\r\r\n\x1b[1C\x1b[4A'
+const mainInput = '\r\x1b[1B\x1b[39m❯ \x1b[2mTry "how does restoreCoordinatorShell.test.ts work?"\r\x1b[1B'
+
+test('the folder-trust screen is recognised when Claude places words with cursor moves', () => {
+  const text = terminalText(trustScreen)
+  assert.equal(folderTrustPrompt(text), true)
+  assert.match(text, /Yes, I trust this folder/)
+  assert.ok(text.includes('/private/owned/My Project'))
+  assert.equal(folderTrustPrompt(terminalText(mainInput)), false)
+  assert.match(terminalText(mainInput), /Try "how does/)
 })

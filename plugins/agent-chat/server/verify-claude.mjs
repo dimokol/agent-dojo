@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { spawnVerificationPty, stopVerificationPty, resumedTranscriptProof, resumeCaseEnv, resumeState, removeProbeConversation } from './claude-verification-runtime.mjs'
+import { spawnVerificationPty, stopVerificationPty, resumedTranscriptProof, resumeCaseEnv, resumeState, removeProbeConversation, terminalText, folderTrustPrompt } from './claude-verification-runtime.mjs'
 import { randomUUID } from 'node:crypto'
 import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
@@ -37,7 +37,7 @@ async function verify(recordRoot, resumeCase = false) {
     limits: ['Native Claude CLI in a private PTY, not actual GUI tabs.',
       'No manual live config edits, authentication copies, installs, or global daemon changes. The probe conversation files are removed afterwards; the native CLI keeps its prompt-history line.'] }
   let resumePhase = false, resumeCommandSent = false, resumeSentAt = 0, preResumeWorkerPid, preResumeSocketHash
-  let stage = 'preflight', outputBytes = 0, timedOut = false, terminalTail = '', trustSent = false, promptSent = false
+  let stage = 'preflight', outputBytes = 0, timedOut = false, terminalTail = '', promptSent = false
   const terminate=()=>{timedOut=true;abortWait?.(new Error('VERIFICATION_CANCELLED'))}
   process.once('SIGTERM',terminate)
   const began = Date.now()
@@ -146,9 +146,9 @@ input.on('close',()=>service.close());
     const inspectTerminal = data => {
       outputBytes += data.length
       terminalTail = (terminalTail + data.toString()).slice(-32_768)
-      const text = terminalTail.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+      const text = terminalText(terminalTail)
       const flags = result.terminalDiagnostics ||= {}
-      flags.trustDialog ||= /(?:trust (?:this|the) folder|trust the files in this folder|project you created or one you trust)/i.test(text)
+      flags.trustDialog ||= folderTrustPrompt(text)
       flags.exactOwnFolder ||= text.includes(cwd)
       flags.permissionPrompt ||= /(?:Do you want to proceed|Allow this tool|requires your approval)/i.test(text)
       flags.loginPrompt ||= /(?:Not logged in|Please run \/login|Sign in to your account|Select login method)/i.test(text)
@@ -164,12 +164,7 @@ input.on('close',()=>service.close());
       flags.modelBusy ||= /(?:esc to interrupt|Thinking|Thinking\.|Working\.|Creating\.)/i.test(text)
       const inputMarkers = [...data.toString().matchAll(/VERIFY_INPUT_BYTES:(\d+)/g)]
       if (inputMarkers.length) result.ptyInputBytesSent = (result.ptyInputBytesSent || 0) + inputMarkers.reduce((sum, match) => sum + Number(match[1]), 0)
-      if (!trustSent && flags.trustDialog && flags.exactOwnFolder && /1\.\s*Yes, I trust (?:this|the) folder/i.test(text)) {
-        trustSent = true; flags.exactOwnFolderTrustConfirmed = true
-        child.stdin.write('1\r')
-        console.log(JSON.stringify({ diagnostic: 'EXACT_OWN_FOLDER_TRUST_CONFIRMED' }))
-      }
-      if (resumePhase && !resumeCommandSent && flags.mainInput && (!flags.trustDialog || trustSent) &&
+      if (resumePhase && !resumeCommandSent && flags.mainInput && !flags.trustDialog &&
           !flags.loginPrompt && !flags.themePrompt && !flags.mcpError && !flags.permissionPrompt) {
         let beforeResume
         try { beforeResume = JSON.parse(fs.readFileSync(diagnosticFile, 'utf8')) } catch { return }
@@ -187,7 +182,7 @@ input.on('close',()=>service.close());
       if (resumed === 'not_found') abortWait?.(new Error('NATIVE_RESUME_TARGET_NOT_FOUND'))
       if (resumed === 'settled') result.nativeResumeSettled = true
       if (resumePhase && resumeCommandSent && /(?:Resumed|resum(?:e|ed) session)/i.test(text)) result.nativeResumeUiConfirmed = true
-      if (!promptSent && (!resumePhase || resumed === 'settled') && flags.mainInput && (!flags.trustDialog || trustSent) &&
+      if (!promptSent && (!resumePhase || resumed === 'settled') && flags.mainInput && !flags.trustDialog &&
           !flags.loginPrompt && !flags.themePrompt && !flags.mcpError && !flags.permissionPrompt) {
         promptSent = true; result.initialPromptSubmitted = true
         clearTimeout(startupTimeout)
@@ -196,7 +191,10 @@ input.on('close',()=>service.close());
         enter.unref()
         console.log(JSON.stringify({ diagnostic: 'NATIVE_MAIN_INPUT_PROMPT_SUBMITTED' }))
       }
-      if (flags.loginPrompt) abortWait?.(new Error('NATIVE_LOGIN_REQUIRED'))
+      // The verifier never answers the trust screen: its default is "No, exit" and trusting a
+      // folder is the operator's call. Run it from a folder Claude already trusts.
+      if (flags.trustDialog) abortWait?.(new Error('NATIVE_FOLDER_UNTRUSTED'))
+      else if (flags.loginPrompt) abortWait?.(new Error('NATIVE_LOGIN_REQUIRED'))
       else if (flags.themePrompt) abortWait?.(new Error('NATIVE_ONBOARDING_REQUIRED'))
       else if (flags.mcpError) abortWait?.(new Error('NATIVE_MCP_STARTUP_ERROR'))
     }
@@ -225,7 +223,7 @@ input.on('close',()=>service.close());
       result.distinctLaunchAndTargetIds = sessionId !== targetId
       prompt = `Isolated resumed verification ${randomUUID()}. Rejoin room ${room} as ${receiver} and post exactly RESUMED_READY to ${sender}, idempotency_key verify-resumed-ready. Then end your turn. On the next native PING notification, read inbox and post exactly PONG to ${sender}, reply_to its message_id, idempotency_key verify-pong. No ack or other work.`
       const marker = prompt.split('. ')[0]
-      promptSent = false; trustSent = false; terminalTail = ''; resumePhase = true
+      promptSent = false; terminalTail = ''; resumePhase = true
       result.terminalDiagnostics = {}
       const freshArgs = [...args]
       freshArgs[freshArgs.indexOf('--session-id') + 1] = sessionId

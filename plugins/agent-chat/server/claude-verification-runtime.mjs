@@ -38,6 +38,14 @@ sys.exit(actor.returncode if actor.returncode is not None and actor.returncode>=
   return spawn('/usr/bin/python3', ['-c', bridge, JSON.stringify(args)], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
 
 }
+// Claude 2.1.322+ places each word with a cursor move (ESC[<n>G or ESC[<n>C) instead of printing
+// a space, so those moves become a space before the other escapes are stripped.
+export function terminalText(tail) {
+  return tail.replace(/\x1b\[\d*[GC]/g, ' ').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+}
+export function folderTrustPrompt(text) {
+  return /(?:trust (?:this|the) folder|trust the files in this folder|project you created or one you trust)/i.test(text)
+}
 // Started from inside a Claude tab, the probe inherits the tab's child-session marker and saves
 // no transcript, so /resume finds nothing. Only the resume case needs one.
 export function resumeCaseEnv(env) {
