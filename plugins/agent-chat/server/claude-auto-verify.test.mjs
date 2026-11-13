@@ -120,3 +120,13 @@ test('a failure that is not about load is not retried, and free text never reach
  const free=await runVerificationWorker(odd.input,{executor:async()=>{throw Object.assign(Error('x'),{stdout:JSON.stringify({failure:{stage:'Has spaces',code:'leak me'}})})},isVerified:()=>false,pause:async()=>{}})
  assert.equal(JSON.parse(fs.readFileSync(free.logPath,'utf8')).failure,null)
 })
+
+test('the failure log keeps the verifier screen flags as true or false only, never screen text',async t=>{
+ const first=scheduled(fixture(t))
+ const terminalDiagnostics={trustDialog:true,mainInput:false,readableText:true,screen:'secret screen text','bad key':true,count:3}
+ const stdout='Safe notice\n'+JSON.stringify({version,passed:false,terminalDiagnostics,failure:{stage:'native_initial_ready',code:'NATIVE_FOLDER_UNTRUSTED'}},null,2)+'\n'
+ const result=await runVerificationWorker(first.input,{executor:async()=>{throw Object.assign(Error('exit 1'),{code:1,stdout})},isVerified:()=>false,pause:async()=>{throw Error('no pause expected')}})
+ const log=fs.readFileSync(result.logPath,'utf8')
+ assert.deepEqual(JSON.parse(log).failure,{stage:'native_initial_ready',code:'NATIVE_FOLDER_UNTRUSTED',terminal:{trustDialog:true,mainInput:false,readableText:true}})
+ assert.doesNotMatch(log,/secret|bad key|count/)
+})
