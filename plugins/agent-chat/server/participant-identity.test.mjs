@@ -66,7 +66,8 @@ test('Claude identity follows actual conversation across launches, clear receive
   assert.throws(()=>store.join({room:'two',agent:'Claude',session:claude('launch2','22222222-2222-2222-2222-222222222222')}),/owned/)
 })
 
-test('explicit closed-name adoption transfers only unread direct mail across rooms',t=>{
+// 2.0.3: mail the old owner read but never confirmed moves too, marked maybe_seen (user decision).
+test('explicit closed-name adoption transfers open direct mail across rooms, read-but-unconfirmed mail marked maybe_seen',t=>{
   const {store}=fixture(t)
   const first=store.join({room:'one',agent:'Reader',session:session('a')})
   store.join({room:'two',agent:'Reader',session:session('a')})
@@ -78,10 +79,11 @@ test('explicit closed-name adoption transfers only unread direct mail across roo
   const next=store.join({room:'one',agent:'Reader',session:session('b')})
   store.join({room:'two',agent:'Reader',session:session('b')})
   assert.notEqual(next.participant_id,first.participant_id)
-  assert.deepEqual(store.pending({room:'one',agent:'Reader',sessionId:'b'}),[])
-  assert.deepEqual(store.pending({room:'two',agent:'Reader',sessionId:'b'}).map(row=>row.id),[unread.message_id])
+  assert.deepEqual(store.pending({room:'one',agent:'Reader',sessionId:'b'}).map(row=>[row.id,row.delivery.status,row.delivery.maybe_seen]),[[delivered.message_id,'pending',true]])
+  assert.deepEqual(store.pending({room:'two',agent:'Reader',sessionId:'b'}).map(row=>[row.id,row.delivery.maybe_seen]),[[unread.message_id,undefined]])
   const state=JSON.parse(fs.readFileSync(store.statePath,'utf8'))
-  assert.equal(state.rooms.one.retired_members[first.participant_id].deliveries[delivered.message_id].status,'delivered')
+  assert.equal(state.rooms.one.retired_members[first.participant_id].deliveries[delivered.message_id],undefined)
+  assert.equal(state.rooms.one.delivery_owners[delivered.message_id].participant_id,next.participant_id)
   assert.ok(state.rooms.one.retired_members[first.participant_id].deliveries[broadcast.message_id])
   assert.equal(store.history({room:'two'})[0].to_id,first.participant_id)
   assert.equal(state.rooms.two.delivery_owners[unread.message_id].participant_id,next.participant_id)

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { participantId, adoptClosedName } from './participant-identity.mjs'
+import { participantId, adoptClosedName, takeBackName, adoptUnresolved } from './participant-identity.mjs'
 const key=session=>createHash('sha256').update(session.profileHome+'\n'+session.conversationId).digest('hex')
 export function rememberClaudeMembership(state,{room,agent,session},joined=true) {
   if(session.runtime!=='claude'||!session.conversationId)return
@@ -50,12 +50,25 @@ export function restoreClaudeMemberships(state, { session, source, previousConve
   const sameClient = old => old.clientPid === session.clientPid && old.clientStart === session.clientStart && old.endpoint === session.endpoint
   const matchesProfile = old => old.runtime === 'claude' && old.profileHome === session.profileHome
   const conversation = old => old.conversationId ?? old.id
+  const isTarget = (room, member) => {
+    const known=state.claudeRooms?.[key(session)]
+    return member.participant_id ? member.participant_id===participantId(session) :
+      known?.profileHome===session.profileHome&&known.conversationId===session.conversationId&&known.rooms[room]?.includes(member.agent) || conversation(member.session) === session.conversationId
+  }
+  // Rows this tab joined before its conversation was recorded belong to it, unless this is a new
+  // conversation (/clear, fork): then they were the one it left.
+  if (now && records && !['clear', 'fork'].includes(source)) adoptUnresolved(state, session, now, records, preserveUnconfirmed)
+  // What this tab leaves closes first, so the conversation it switches to can take back a name
+  // the one it left took over (a /clear, then a join under the same name, then a /resume back).
+  for (const [room, rs] of Object.entries(state.rooms)) for (const member of Object.values(rs.members)) {
+    if (!matchesProfile(member.session) || member.left_reason === 'explicit' || skip.has(room + '\n' + member.agent)) continue
+    if (!isTarget(room, member) && member.joined && sameClient(member.session)) { member.joined = false; member.left_reason = 'conversation_changed'; preserveUnconfirmed(member) }
+  }
+  if (now && records) takeBackName(state, session, now, records)
   for (const [room, rs] of Object.entries(state.rooms)) for (const member of Object.values(rs.members)) {
     const old = member.session
     if (!matchesProfile(old) || member.left_reason === 'explicit' || skip.has(room + '\n' + member.agent)) continue
-    const known=state.claudeRooms?.[key(session)]
-    const target = member.participant_id ? member.participant_id===participantId(session) :
-      known?.profileHome===session.profileHome&&known.conversationId===session.conversationId&&known.rooms[room]?.includes(member.agent) || conversation(old) === session.conversationId
+    const target = isTarget(room, member)
     // Switching to another conversation must not keep receiving its mail.
     if (!target) {
       if (member.joined && sameClient(old)) {

@@ -3,7 +3,7 @@ description: agent-chat: rename this session's chat participant
 argument-hint: <new-name>
 allowed-tools: mcp__plugin_agent-chat_agent-chat__rename_session
 ---
-Rename this session's agent-chat participant to `$ARGUMENTS`. This is an explicit name and replaces the default one.
+Rename this session's agent-chat participant to `$ARGUMENTS`. This is an explicit name: it replaces a name from a join or the session title, and later joins under other names keep it.
 
 1. If `$ARGUMENTS` is empty, ask for the name and stop.
 2. Call the agent-chat `rename_session` tool once with only `name`: `$ARGUMENTS`, exactly as typed. The server finds this session's own identity, so pass nothing else; the rename applies to every room.

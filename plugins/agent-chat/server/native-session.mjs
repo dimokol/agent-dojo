@@ -58,18 +58,29 @@ export function isProcessLive(identity) {
     processIdentity(identity.pid)?.start === identity.start
 }
 
-// comm excludes CLI arguments, which can contain private prompt or MCP data.
+// comm excludes CLI arguments, which can contain private prompt or MCP data. null is a definite
+// answer (gone, another user's, an impossible PID); a ps that failed, timed out or listed nothing
+// throws, so a busy machine never reads as "not a native session".
 function processCommand(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null
+  try { process.kill(pid, 0) } catch (error) { if (error.code !== 'EPERM') return null }
+  let output
   try {
-    process.kill(pid, 0)
-    const output = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid=', '-o', 'comm='], {
+    output = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid=', '-o', 'comm='], {
       env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
       encoding: 'utf8', timeout: 1000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
-    const match = /^(\d+)\s+([^\n\0]+)$/.exec(output)
-    return match && Number(match[1]) === process.getuid() ? match[2] : null
-  } catch { return null }
+  } catch (error) {
+    // Exit 1 with no row: ps found no such PID, which is proof only once the PID is gone.
+    if (error.status !== 1 || String(error.stdout ?? '').trim()) throw presenceUnavailable()
+    output = ''
+  }
+  if (!output) {
+    try { process.kill(pid, 0) } catch (error) { if (error.code !== 'EPERM') return null }
+    throw presenceUnavailable()
+  }
+  const match = /^(\d+)\s+([^\n\0]+)$/.exec(output)
+  return match && Number(match[1]) === process.getuid() ? match[2] : null
 }
 
 // On macOS comm can be shortened to a title. The first txt mapping identifies
@@ -171,7 +182,12 @@ export function inferNativeSession(meta, env = process.env, { pid = process.pid,
     // at all the install can't be checked, so the session counts as not native.
     unknown = command === 'claude' && executable === null && hasLsof()
     isClaudeParent = !!parent && expectedPredicate(executable) === true
-  } catch { return null }
+  } catch (error) {
+    // A process check that could not run is unknown: the caller is told to retry, not that the
+    // session isn't native.
+    if (error?.code === 'CHAT_PRESENCE_UNAVAILABLE') throw error
+    return null
+  }
   if (unknown) throw new Error('Native Claude session check timed out; retry')
   if (!profileHome || !parent || !server || !isClaudeParent || typeof socketPath !== 'string' || !path.isAbsolute(socketPath) || socketPath.includes('\0')) return null
   const claudeVersion = runningClaudeVersion(executable)

@@ -1,6 +1,6 @@
 // Read-only views over a persisted store state. Nothing here writes, locks or
 // adopts; callers pass the state they already read under the store lock.
-import { isBroadcast, readState } from './message-policy.mjs'
+import { isBroadcast, readState, wakes } from './message-policy.mjs'
 import { recipientStates } from './read-index.mjs'
 
 const seenStatuses = new Set(['delivered', 'acked', 'received', 'handled'])
@@ -36,7 +36,17 @@ function roomStatus(rs, participantId, joinedElsewhere = new Set()) {
   return status === 'never_joined' && joinedElsewhere.has(participantId) ? 'not_in_room' : status
 }
 const canonicalName = (state, member) => state.participants?.[member.participant_id]?.name ?? member.agent
-const senderId = (state, message) => message.from_id ?? state.nameOwners?.[String(message.from).toLowerCase()]?.participant_id ?? null
+// One row per name: a retired owner's mail (a closed name another session took over) counts
+// under the name's current owner, never as a second row with the same name.
+function groupOf(state, row) {
+  const retired = state.participants?.[row.participant_id]
+  const name = retired && !retired.name && retired.previous_name
+  if (!name) return { key: row.participant_id ?? `to:${row.agent.toLowerCase()}`, name: row.agent, participant_id: row.participant_id ?? null }
+  const owner = state.nameOwners && Object.hasOwn(state.nameOwners, name.toLowerCase()) ? state.nameOwners[name.toLowerCase()].participant_id : null
+  const current = owner && state.participants[owner]?.name?.toLowerCase() === name.toLowerCase() ? owner : null
+  return current ? { key: current, name: state.participants[current].name, participant_id: current } : { key: `to:${name.toLowerCase()}`, name, participant_id: row.participant_id }
+}
+const senderId = (state, message) => { const key = String(message.from).toLowerCase(); return message.from_id ?? (state.nameOwners && Object.hasOwn(state.nameOwners, key) ? state.nameOwners[key].participant_id : null) ?? null }
 
 // Last seen is evidence the agent itself acted: its inbox returned content
 // (delivered or later receipts) or, when records are given, it posted.
@@ -93,9 +103,9 @@ export function unreadReport(state, now, records) {
           continue
         }
         if (!['unread', 'delivered'].includes(row.read_state)) continue
-        const key = row.participant_id ?? `to:${row.agent.toLowerCase()}`
-        const group = groups.get(key) ?? { name: row.agent, participant_id: row.participant_id ?? null, rooms: new Map() }
-        const status = roomStatus(rs, row.participant_id, joinedElsewhere)
+        const { key, name, participant_id } = groupOf(state, row)
+        const group = groups.get(key) ?? { name, participant_id, rooms: new Map() }
+        const status = roomStatus(rs, participant_id, joinedElsewhere)
         const entry = group.rooms.get(room) ?? { room, status, unread: 0, delivered: 0, at: null }
         entry[row.read_state]++; entry.at = older(entry.at, at)
         group.rooms.set(room, entry); groups.set(key, group)
@@ -128,4 +138,45 @@ export function sessionUnread(state) {
     if (member.participant_id) sessions.set(member.participant_id, entry)
   }
   return [...sessions.values()]
+}
+
+const joinedIds = state => new Set(Object.values(state.rooms).flatMap(rs => Object.values(rs.members).filter(row => row.joined).map(row => row.participant_id)))
+// Why mail for a name not joined in this room waits: its tab closed, or the name is elsewhere,
+// left or never joined. A name joined in another room is a live tab, so not closed.
+export function absentReason(state, rs, participantId, joined = joinedIds(state)) {
+  return !joined.has(participantId) && roomStatus(rs ?? { members: {} }, participantId) === 'closed' ? 'closed' : 'not_in_room'
+}
+
+// 2.0.0 to 2.0.2 stored every transport outcome as status notified plus an error text, success
+// included. Only a ring (2.0.2's wording or 2.0.0/2.0.1's "Peer frame written") or a Codex queue
+// that went through reads as such; any other text there was an uncertain write. The view maps it
+// the 2.0.3 way and drops the error key; disk keeps it.
+const legacySuccess = /^(The tab was rung|Peer frame written|Codex queue command accepted)/
+export function receiptView(receipt) {
+  if (!receipt || receipt.state || typeof receipt.error !== 'string') return receipt
+  const { error, ...rest } = receipt
+  if (receipt.status !== 'notified') return ['pending', 'failed'].includes(receipt.status) ? receipt : rest
+  return legacySuccess.test(error) ? rest : { ...rest, state: 'held', reason: 'write_uncertain' }
+}
+
+// The sender's view of mail it sent: per message, per recipient, the delivery state and read state.
+// A receipt written by an older release has no state; its status decides.
+export function sentReport(state, room, participantId, records, limit = 20) {
+  const rs = state.rooms[room]
+  if (!rs || !participantId) return []
+  const joined = joinedIds(state)
+  const sent = records(room).filter(message => (message.from_id ?? senderId(state, message)) === participantId).slice(-limit)
+  return sent.map(message => ({ sent: true, message_id: message.id, to: message.to, recipients: recipientStates(state, rs, message, participantId).map(entry => {
+    const row = rowsOf(rs).find(member => member.participant_id === entry.participant_id)
+    const receipt = receiptView(row?.deliveries[message.id])
+    const held = reason => ({ state: 'held', ...(reason ? { reason } : {}) })
+    let view
+    if (!['unread', 'unknown_legacy'].includes(entry.read_state)) view = receipt?.state ? { state: receipt.state } : {}
+    else if (receipt?.status === 'notified' && receipt.state !== 'held') view = { state: receipt.state ?? (row.session.runtime === 'codex' ? 'queued' : 'rung') }
+    else if (receipt?.status === 'notified') view = held(receipt.reason)
+    else if (receipt?.status === 'dispatching') view = held(receipt.state === 'held' ? receipt.reason : 'ringing')
+    else if (!row?.joined) view = held(absentReason(state, rs, entry.participant_id, joined))
+    else view = held(receipt?.state === 'held' ? receipt.reason : wakes(message) ? 'waiting' : 'no_wake')
+    return { agent: entry.agent, ...view, read_state: entry.read_state }
+  }) }))
 }

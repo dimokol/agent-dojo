@@ -55,6 +55,9 @@ function stateOf(row, message, fixed) {
   const receipt = row.deliveries[message.id]
   if (receipt) return readState(receipt.status)
   if (fixed && message.cursor > (row.legacy_cursor ?? 0) && message.cursor <= (row.received_cursor ?? 0)) return 'received'
+  // Above the watermark nothing was received: mail to a row routing never reached (a closed
+  // owner's reserved earlier name) waits unread, the way it does for a recipient with no row.
+  if (fixed && message.cursor > (row.legacy_cursor ?? 0)) return 'unread'
   return 'unknown_legacy'
 }
 

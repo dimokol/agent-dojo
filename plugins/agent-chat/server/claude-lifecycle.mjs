@@ -61,29 +61,65 @@ export function validateClaudeLifecycleSocket(endpoint, pid) {
       !socket.isSocket() || socket.uid !== process.getuid() || (socket.mode & 0o777) !== 0o600) throw unavailable()
   return canonical
 }
-// One bounded ps snapshot, no argv or environment inspection of other processes.
-export function claudeLifecycleAncestors(ppid = process.ppid, { psTimeoutMs, lsofTimeoutMs } = HOOK_BOUNDS) {
-  if (!Number.isSafeInteger(ppid) || ppid <= 0) return []
-  const output = execFileSync('/bin/ps', ['-ax', '-o', 'pid=', '-o', 'ppid=', '-o', 'uid=', '-o', 'lstart=', '-o', 'comm='], {
-    encoding: 'utf8', timeout: psTimeoutMs, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-    env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
-  })
-  const rows = new Map()
-  for (const line of output.split('\n')) {
+// One bounded ps snapshot, no argv or environment inspection of other processes. ps lists every
+// process of every owner, so one that listed nothing failed (a sysctl failure exits 0 with no rows):
+// that is unknown, never "no such process".
+export function claudeProcessListing({ psTimeoutMs } = HOOK_BOUNDS) {
+  let output
+  try {
+    output = execFileSync('/bin/ps', ['-ax', '-o', 'pid=', '-o', 'ppid=', '-o', 'uid=', '-o', 'lstart=', '-o', 'comm='], {
+      encoding: 'utf8', timeout: psTimeoutMs, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+    })
+  } catch { throw unavailable('process') }
+  const rows = new Map(), listed = new Set()
+  for (const line of String(output).split('\n')) {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3} \w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})\s+(.+)$/.exec(line)
-    if (match && Number(match[3]) === process.getuid()) rows.set(Number(match[1]), {
+    if (!match) continue
+    listed.add(Number(match[1]))
+    if (Number(match[3]) === process.getuid()) rows.set(Number(match[1]), {
       pid: Number(match[1]), ppid: Number(match[2]), start: match[4], command: match[5],
     })
   }
+  if (!listed.size) throw unavailable('process')
+  return { rows, listed }
+}
+const processExists = pid => { try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' } }
+// This user's row for a PID, or null when ps proves it gone or another user's. A PID that still
+// exists but that the listing left out makes the listing untrustworthy: unknown.
+export function listingLookup(listing) {
+  return pid => {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return null
+    if (listing.rows.has(pid)) return listing.rows.get(pid)
+    if (!listing.listed.has(pid) && processExists(pid)) throw unavailable('process')
+    return null
+  }
+}
+// The executable a process runs can't change while it keeps its PID and start time, so one lsof per
+// process is enough. Only an answer is kept; a failed lsof is asked again next time.
+const executables = new Map()
+export function claudeExecutable(pid, start, { timeoutMs = CALL_BOUNDS.lsofTimeoutMs } = {}) {
+  const key = `${pid}\n${start}`
+  if (typeof start === 'string' && executables.has(key)) return executables.get(key)
+  const executable = processExecutable(pid, { timeoutMs })
+  if (executable !== null && typeof start === 'string') {
+    if (executables.size >= 512) executables.clear()
+    executables.set(key, executable)
+  }
+  return executable
+}
+// lookup: a shared listing's lookup (one ps for many checks); by default a fresh listing.
+export function claudeLifecycleAncestors(ppid = process.ppid, { psTimeoutMs, lsofTimeoutMs } = HOOK_BOUNDS, { lookup } = {}) {
+  if (!Number.isSafeInteger(ppid) || ppid <= 0) return []
+  lookup ??= listingLookup(claudeProcessListing({ psTimeoutMs }))
   const result = []
   let executableResolved = false
-  for (let current = ppid; result.length < 6 && rows.has(current); current = rows.get(current).ppid) {
-    const row = rows.get(current)
+  for (let current = ppid, row; result.length < 6 && (row = lookup(current)); current = row.ppid) {
     let command = row.command
     if (command === 'claude') {
       if (executableResolved) break
       executableResolved = true
-      command = processExecutable(row.pid, { timeoutMs: lsofTimeoutMs })
+      command = claudeExecutable(row.pid, row.start, { timeoutMs: lsofTimeoutMs })
       // An lsof that failed proves nothing about this process: unknown, never untrusted.
       if (command === null) throw unavailable('process')
     }
@@ -236,6 +272,13 @@ export function clearRegistrationRetry(stateRoot, launch) {
   if (!UUID.test(launch ?? '')) return
   for (const file of [path.join(stateRoot, 'lifecycle-failures', `pending-${launch}.json`), path.join(stateRoot, 'notices', `session-${launch}.registration.gate`)])
     try { fs.unlinkSync(file) } catch {}
+}
+// A background restore that failed leaves a gate, so the prompt hook tells the tab; the next call
+// that rejoins its rooms (or a restore that works) removes it.
+export const restoreGateFile = (stateRoot, launch) => path.join(stateRoot, 'notices', `session-${launch}.restore.gate`)
+export function clearRestoreNotice(stateRoot, launch) {
+  if (!UUID.test(launch ?? '')) return
+  try { fs.unlinkSync(restoreGateFile(stateRoot, launch)) } catch {}
 }
 // null is a definite answer: not this CLI process, its socket is gone, or it
 // has no record. A check that could not run (ps or lsof failed, a damaged or

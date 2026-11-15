@@ -138,17 +138,20 @@ test('rename_session without room and agent renames the caller after a resume; t
   await assert.rejects(resumed.call('rename_session', { room: 'setup', name: 'Half' }), /invalid rename_session/)
 })
 
-test('a Claude session takes its cached native label over the agent suggestion; an explicit name beats both', async t => {
+test('a Claude session takes its join name over the cached native label; an explicit name beats both', async t => {
   const f = fixture(t), id = participantId(f.claude)
   privateDirectory(path.join(f.stateRoot, 'names'), true)
   writeIfChanged(nameFiles(f.stateRoot, id).native, JSON.stringify({ schema: 1, label: 'review-ui' }) + '\n')
   const service = nativeService(f)
   const joined = await service.call('join_room', { room: 'setup', agent: 'Helper' })
-  assert.equal(joined.agent, 'review-ui')
-  assert.deepEqual(await service.call('inbox', { room: 'setup', agent: 'Helper' }), [], 'the suggested alias still names this session on its connection')
+  assert.equal(joined.agent, 'Helper')
+  assert.deepEqual(await service.call('inbox', { room: 'setup', agent: 'Helper' }), [])
   await service.call('rename_session', { name: 'Chosen' })
   f.store.createRoom({ room: 'other', title: 'Other' })
-  assert.equal((await service.call('join_room', { room: 'other', agent: 'Helper' })).agent, 'Chosen')
+  const kept = await service.call('join_room', { room: 'other', agent: 'Helper' })
+  assert.deepEqual([kept.agent, kept.requested], ['Chosen', 'Helper'])
+  assert.deepEqual(await service.call('inbox', { room: 'other', agent: 'Helper' }), [], 'the asked alias still names this session on its connection')
+  // Helper is this session's own earlier name, so the auto-joining post goes out as Chosen.
   const posted = await service.call('post', { room: 'fresh', from: 'Helper', message: 'auto join' })
   assert.equal(f.store.history({ room: 'fresh' })[0].from, 'Chosen')
   assert.ok(posted.message_id)

@@ -80,7 +80,7 @@ export function pruneHousekeeping(stateRoot, { now = Date.now(), nativeAgeMs = 1
   // A retry marker outlives a tab that closed before it registered; a week is long enough.
   const retryAgeMs = 7 * 86_400_000
   for (const [folder, pattern, age] of [['names', /^[0-9a-f]{64}\.native$/, nativeAgeMs], ['hook-tasks', /^[0-9a-f-]{36}\.json$/, taskAgeMs],
-    ['notices', /^session-[0-9a-f-]{36}\.registration\.gate$/, retryAgeMs], ['lifecycle-failures', /^pending-[0-9a-f-]{36}\.json$/, retryAgeMs]]) {
+    ['notices', /^session-[0-9a-f-]{36}\.(registration|restore)\.gate$/, retryAgeMs], ['lifecycle-failures', /^pending-[0-9a-f-]{36}\.json$/, retryAgeMs]]) {
     const directory = path.join(stateRoot, folder)
     let names
     try { names = fs.readdirSync(directory) } catch (error) { if (error.code === 'ENOENT') continue; throw error }

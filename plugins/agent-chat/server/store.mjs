@@ -3,14 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { restoreClaudeMemberships, rememberClaudeMembership } from './claude-memberships.mjs'
-import { identifier, slug, canonicalRoot, projectStateKey, migrateProjectState, ensureDirectory, readJson, atomicJson, append, locked, projectDirectory, predictProjectDirectory } from './store-files.mjs'
+import { identifier, slug, roomFromTitle, checkRoomFolder, canonicalRoot, projectStateKey, migrateProjectState, ensureDirectory, readJson, atomicJson, append, locked, projectDirectory, predictProjectDirectory } from './store-files.mjs'
 import { createLogReader } from './canonical-log.mjs'
 import { distribution } from './distribution.mjs'
 import { syncNotices, syncNameCache } from './notices.mjs'
-import { members as memberRows, unreadReport as unreadRows } from './chat-queries.mjs'
+import { members as memberRows, unreadReport as unreadRows, sentReport, absentReason, receiptView } from './chat-queries.mjs'
 
 import { validState, stateDamage } from './store-schema.mjs'
-import { participantId, initializeParticipants, nameOwner, registerParticipant, renameParticipant, adoptClosedName, completed } from './participant-identity.mjs'
+import { participantId, initializeParticipants, nameOwner, registerParticipant, renameParticipant, adoptClosedName, adoptClosedNameAsRename, reclaimRetired, settleParked, takeBackName, adoptUnresolved, completed } from './participant-identity.mjs'
 import { postPolicy, isBroadcast, wakes, readState } from './message-policy.mjs'
 import { migrateReadIndex, compactReadIndex, recipientStates, directTarget } from './read-index.mjs'
 import { isDismissed, dismissMail } from './dismissals.mjs'
@@ -73,11 +73,12 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     const variant = (present() ? fs.readdirSync(roomsDir) : []).find(name => name !== room && name.toLowerCase() === room.toLowerCase())
     if (variant) throw new Error(`room case variant conflicts with ${variant}`)
     const roomDir = path.join(roomsDir, room)
-    if (fs.existsSync(roomDir)) ensureDirectory(roomDir)
+    if (fs.existsSync(roomDir)) checkRoomFolder(room, roomDir)
     return { dir: roomDir, meta: path.join(roomDir, 'room.json'), log: path.join(roomDir, 'chat.jsonl'), md: path.join(roomDir, 'chat.md') }
   }
   const { records, indexed } = createLogReader(room => paths(room).log)
-  const roomExists = (room) => Boolean(readJson(paths(room).meta, null))
+  // A folder this project hasn't claimed may be another project's of the same name: nothing in it counts.
+  const roomExists = (room) => present() && Boolean(readJson(paths(room).meta, null))
   const makeRoom = (room, title) => {
     const p = paths(room)
     ensureDirectory(p.dir)
@@ -97,15 +98,16 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
   const enqueue = (state, room, member, messages, resolved = false) => {
     for (const message of messages) {
       const rs=state.rooms[room], broadcast=isBroadcast(message.to)
-      let target=directTarget(rs, message)
+      let target=directTarget(rs, message), assigned=false
+      // A name nobody owned when the mail came gets its owner now: no watermark covers this mail yet.
       if(!broadcast&&!target) {
         target=owner(state,message.to)?.id
-        if(target)(rs.legacy_recipients??={})[message.id]=target
+        if(target){(rs.legacy_recipients??={})[message.id]=target;assigned=true}
       }
       const sender=message.from_id ?? owner(state,message.from)?.id
       // A recorded audience is final: a later joiner or rejoiner never inherits that broadcast.
       const recipient=broadcast ? (Array.isArray(message.audience) ? message.audience.includes(member.participant_id) : member.joined && message.cursor>member.after_cursor) : target===member.participant_id
-      if ((resolved || message.cursor > (member.received_cursor ?? 0)) && sender!==member.participant_id && recipient && !member.deliveries[message.id] && !isDismissed(rs,message,member.participant_id)) {
+      if ((resolved || assigned || message.cursor > (member.received_cursor ?? 0)) && sender!==member.participant_id && recipient && !member.deliveries[message.id] && !isDismissed(rs,message,member.participant_id)) {
         member.deliveries[message.id] = { status: 'pending', attempts: 0, updated: stamp() }
       }
     }
@@ -182,6 +184,14 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     }
     return result
   })
+  // Another participant's hold on a name: 'live' (joined somewhere), 'closed', 'reserved' (an
+  // old name kept for whoever renamed away from it), or null when the name is free or our own.
+  const nameHold = (state, id, name) => {
+    const holder = nameOwner(state, name, now(), (name, id) => unreadName(state, name, id))
+    if (!holder || holder.id === id) return null
+    if (state.nameOwners[String(name).toLowerCase()].retired_at !== undefined) return 'reserved'
+    return Object.values(state.rooms).some(rs => Object.values(rs.members).some(member => member.participant_id === holder.id && member.joined)) ? 'live' : 'closed'
+  }
   const requireMember = (state, room, agent, sessionId, participant_id) => {
     identifier(room, 'room'); identifier(agent, 'agent')
     const id=participant_id??owner(state,agent)?.id
@@ -195,7 +205,7 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
       if (room && roomId !== room) continue
       for (const member of Object.values(rs.members)) {
         if (agent && member.participant_id !== owner(state,agent)?.id) continue
-        for (const [message_id, receipt] of Object.entries(member.deliveries)) rows.push({ room: roomId, agent: member.agent, sessionId: member.session.id, participant_id: member.participant_id, joined: member.joined, message_id, ...receipt, read_state: readState(receipt.status) })
+        for (const [message_id, receipt] of Object.entries(member.deliveries)) rows.push({ room: roomId, agent: member.agent, sessionId: member.session.id, participant_id: member.participant_id, joined: member.joined, message_id, ...receiptView(receipt), read_state: readState(receipt.status) })
       }
     }
     return rows
@@ -237,6 +247,11 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
       if(session?.runtime!=='claude'||!session.conversationId||typeof isLive!=='function') throw new Error('Validated Claude lifecycle observation required')
       return transact(state=>restoreClaudeMemberships(state,observation,{isLive,preserveUnconfirmed,now:now(),records}))
     },
+    // The conversation a tab switched to takes back its rows and name (participant-identity.mjs).
+    takeBackName(session) {
+      if(session?.runtime!=='claude'||!session.conversationId)return []
+      return transact(state=>[...adoptUnresolved(state,session,now(),records,preserveUnconfirmed),...takeBackName(state,session,now(),records)])
+    },
     chooseDefaultName(session,suggested,nativeName) {
       return transact(state=>{
         const existing=state.participants[participantId(session)]
@@ -248,6 +263,27 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
       })
     },
     participants() { return transact(state=>structuredClone(Object.values(state.participants))) },
+    // The name a join under `asked` gives this session: a /name name stays, an earlier name of
+    // this same session addresses it without renaming it back, a name another live session holds
+    // or another session reserved is not taken, anything else (a closed session's name included)
+    // is the new name. An unnamed session asking for a live session's name is refused.
+    joinName(session,asked) {
+      return transact(state=>{
+        const current=state.participants[participantId(session)], hold=nameHold(state,participantId(session),asked)
+        if(!current?.name) {
+          if(hold==='live')throw new Error(`${asked} belongs to another live session; join under another name`)
+          return {name:asked}
+        }
+        if(current.name===asked)return {name:asked}
+        const kept=reason=>({name:current.name,requested:asked,note:`kept ${current.name}; ${reason}`})
+        if(current.source==='explicit')return {name:current.name,requested:asked,note:`kept your /name name ${current.name}; you asked for ${asked}`}
+        const held=state.nameOwners?.[String(asked).toLowerCase()]
+        if(held?.participant_id===current.id&&held.retired_at!==undefined)return kept(`${asked} is an earlier name of this session`)
+        if(hold==='live')return kept(`${asked} belongs to another live session`)
+        if(hold==='reserved')return kept(`${asked} is reserved for its previous owner`)
+        return {name:asked,rename:true,note:`renamed from ${current.name}`}
+      })
+    },
     canonicalSessionName(session) { return transact(state=>structuredClone(state.participants[participantId(session)]??null)) },
     migrateParticipantNames(mapping) { return transact(state=>structuredClone(state.participants),mapping) },
     renameSession({room,agent,sessionId,participantId: id,name,source='agent'}) {
@@ -260,10 +296,11 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     statePath, root: path.resolve(root), projectRoot: fs.realpathSync(projectRoot), stateRoot,
     createRoom({ room, title }) {
       if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('title must contain 1 to 200 characters')
-      if (room) identifier(room, 'room')
+      // The name is settled before anything is made, so a refused one leaves no project behind.
+      const named = room ? identifier(room, 'room') : roomFromTitle(title)
       materialize()
       return transact(() => {
-        let id = room ? identifier(room, 'room') : slug(title)
+        let id = named
         if (room && roomExists(id)) throw new Error('room already exists')
         const base = id
         for (let n = 2; roomExists(id); n++) id = `${base}-${n}`
@@ -272,7 +309,12 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     },
     listRooms() {
       return transact(() => (present() ? fs.readdirSync(roomsDir, { withFileTypes: true }) : []).filter((entry) => entry.isDirectory()).flatMap((entry) => {
-        const meta = readJson(paths(entry.name).meta, null)
+        let meta
+        try { meta = readJson(paths(entry.name).meta, null) }
+        catch (error) {
+          if (error.code === 'CHAT_ROOM_UNSAFE') return [{ room: entry.name, damaged: true, error: error.message }]
+          throw error
+        }
         if (!meta) return []
         let messages
         try { messages = records(entry.name) }
@@ -282,6 +324,8 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     },
     post(args) {
       const validated = validatePost(args)
+      // No project yet means no members: refuse before the project is made.
+      if (args.sessionId !== undefined && !present()) throw new Error('session is not joined as this agent')
       materialize()
       let posted
       try {
@@ -301,11 +345,13 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     history({ room, channel, limit = 200 }) {
       identifier(room, 'room'); if (channel) identifier(channel, 'channel')
       if (!Number.isInteger(limit) || limit < 1 || limit > 10000) throw new Error('invalid history limit')
-      return transact(() => structuredClone(records(room).filter((record) => !channel || record.channel === channel).slice(-limit)))
+      return transact(() => present() ? structuredClone(records(room).filter((record) => !channel || record.channel === channel).slice(-limit)) : [])
     },
     // create: a title to make the room with if it doesn't exist. The name is checked first, so a
     // join that fails leaves no room behind.
-    join({ room, agent, session, after_cursor, create }) {
+    // rename: a session that already has another name takes this one in every room (the server
+    // decides when, see joinName).
+    join({ room, agent, session, after_cursor, create, rename = false }) {
       identifier(room, 'room'); identifier(agent, 'agent')
       if (isBroadcast(agent)) throw new Error('agent alias is reserved for broadcasts')
       if (!session || typeof session.id !== 'string' || !session.id || session.id.length > 300 || typeof session.runtime !== 'string' || !session.runtime || (session.endpoint !== undefined && (typeof session.endpoint !== 'string' || !session.endpoint))) throw new Error('session id and runtime required; endpoint must be a nonempty string if provided')
@@ -319,6 +365,11 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
         if (missing && create === undefined) throw new Error('room does not exist')
         const messages = missing ? [] : records(room)
         const rs = state.rooms[room] ||= { routed_cursor: messages.length, members: {} }
+        // Parked mail goes to its owner before this join enqueues anything from the log.
+        settleParked(state,now(),records)
+        const current=state.participants[participantId(session)]
+        if(rename&&current?.name&&current.name!==agent&&!(nameHold(state,current.id,agent)==='closed'&&adoptClosedNameAsRename(state,session,agent,now(),records)))
+          renameParticipant(state,current.id,agent,{now:now(),unread:(name,id)=>unreadName(state,name,id)})
         adoptClosedName(state,session,agent,now(),records)
         const participant=registerParticipant(state,session,agent,now(),(name,id)=>unreadName(state,name,id))
         const previous = rs.members[agent]
@@ -330,6 +381,7 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
         rememberClaudeMembership(state,{room,agent,session})
         if (sameIdentity && previous.joined) {
           previous.session = metadata
+          reclaimRetired(state, participant.id, metadata, now(), records)
           return structuredClone(previous)
         }
         const sameSession = sameIdentity
@@ -349,6 +401,7 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
           enqueue(state,other,unclaimed,log)
           if(Object.keys(unclaimed.deliveries).length)otherState.members[agent]=unclaimed
         }
+        reclaimRetired(state, participant.id, metadata, now(), records)
         return structuredClone(member)
       })
     },
@@ -356,11 +409,11 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     leave({ room, agent, sessionId, participantId }) {
       return transact((state) => { const member = requireMember(state, room, agent, sessionId, participantId); member.joined = false; member.left_reason = 'explicit'; rememberClaudeMembership(state,{room,agent:member.agent,session:member.session},false); preserveUnconfirmed(member); return { room, agent, joined: false } })
     },
-    deactivateSession(sessionId, expected = {}) {
+    deactivateSession(sessionId, expected = {}, reason = 'session_closed') {
       return transact(state => {
         for (const rs of Object.values(state.rooms)) for (const member of Object.values(rs.members)) {
           if (member.joined && member.session.id === sessionId && Object.entries(expected).every(([key, value]) => member.session[key] === value)) {
-            member.joined = false; member.left_reason = 'session_closed'
+            member.joined = false; member.left_reason = reason
             preserveUnconfirmed(member)
           }
         }
@@ -379,25 +432,27 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     pending({ room, agent, sessionId, participantId }) {
       return transact((state) => {
         const member = requireMember(state, room, agent, sessionId, participantId)
+        reclaimRetired(state, member.participant_id, member.session, now(), records)
         return structuredClone(records(room).filter((record) => member.deliveries[record.id] && !['acked', 'received', 'handled'].includes(member.deliveries[record.id].status)).map((record) => ({ ...record, delivery: { ...member.deliveries[record.id] } })))
       })
     },
     ack({ room, agent, sessionId, participantId, message_ids }) {
       return this.updateDelivery({ room, agent, sessionId, participantId, message_ids, status: 'acked' })
     },
-    claim({ room, agent, sessionId, participantId, message_ids }) {
+    // explain: return { ids, held } so an empty claim says why ('budget' or 'not_read_since_last_ring').
+    claim({ room, agent, sessionId, participantId, message_ids, explain = false }) {
       if (!Array.isArray(message_ids) || !message_ids.length || message_ids.some((id) => typeof id !== 'string')) throw new Error('message_ids required')
       return transact((state) => {
         const member = requireMember(state, room, agent, sessionId, participantId)
-        const claimed = []
+        const claimed = [], held = reason => explain ? { ids: claimed, held: reason } : claimed
         const ring_at = now()
         member.ring_times = (member.ring_times ?? []).filter(time => time > ring_at - 600_000)
         state.ring_times = (state.ring_times ?? []).filter(time => time > ring_at - 600_000)
-        if (member.ring_times.length >= 30 || state.ring_times.length >= 120) return claimed
+        if (member.ring_times.length >= 30 || state.ring_times.length >= 120) return held('budget')
         // Gate only doorbells whose content has not been returned to the agent.
         // An inbox result may be its last call, so delivered cannot block new mail.
         if (Object.values(member.deliveries).some(receipt => ['dispatching', 'notified'].includes(receipt.status) &&
-            !(ring_at - (receipt.ring_at ?? Date.parse(receipt.updated)) >= staleRingMs))) return claimed
+            !(ring_at - (receipt.ring_at ?? Date.parse(receipt.updated)) >= staleRingMs))) return held('not_read_since_last_ring')
         const claim_id = crypto.randomUUID()
         const byId = indexed(room)
         for (const id of new Set(message_ids)) {
@@ -409,13 +464,16 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
           // The durable claim never expires into an automatic retry: a crash has uncertain effects.
           receipt.status = 'dispatching'; receipt.claim_id = claim_id; receipt.ring_at = ring_at
           receipt.updated = stamp(); receipt.attempts++
+          delete receipt.state; delete receipt.reason; delete receipt.detail
           claimed.push(id)
         }
         if (claimed.length) { member.ring_times.push(ring_at); state.ring_times.push(ring_at) }
-        return claimed
+        return held(undefined)
       })
     },
-    updateDelivery({ room, agent, sessionId, participantId, message_ids, status, error, release_claim = false, expected_claim_id }) {
+    // outcome: { state, reason?, detail? } from a delivery attempt. A reset to pending or a ring in
+    // flight without one drops the old outcome; a read keeps how the mail got there.
+    updateDelivery({ room, agent, sessionId, participantId, message_ids, status, error, outcome, release_claim = false, expected_claim_id }) {
       if (!['pending', 'dispatching', 'notified', 'delivered', 'failed', 'acked', 'received', 'handled'].includes(status)) throw new Error('invalid delivery status')
       if (!Array.isArray(message_ids) || !message_ids.length || message_ids.some((id) => typeof id !== 'string')) throw new Error('message_ids required')
       return transact((state) => {
@@ -441,22 +499,30 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
           if (release_claim) { delete receipt.claim_id; delete receipt.ring_at }
           if (status === 'delivered' && !receipt.claim_id) receipt.attempts++
           if (error) receipt.error = String(error).slice(0, 1000); else delete receipt.error
+          if (outcome) {
+            receipt.state = outcome.state
+            for (const field of ['reason', 'detail']) if (outcome[field]) receipt[field] = String(outcome[field]).slice(0, 1000); else delete receipt[field]
+          } else if (['pending', 'dispatching', 'notified', 'failed'].includes(status)) { delete receipt.state; delete receipt.reason; delete receipt.detail }
         }
         // Old received and handled entries are compacted on write (read-index.mjs).
         const wanted = new Set(message_ids)
         return receiptRows(state, room, member.agent).filter((row) => wanted.has(row.message_id))
       })
     },
-    // Only on the user's request. The caller must be joined in the room; the
-    // recipient must not be joined anywhere in the project.
-    dismiss({ room, agent, sessionId, participantId, recipient, message_ids }) {
-      identifier(recipient, 'recipient')
+    // Only on the user's request. The caller needs no membership here and gets none: by is its
+    // participant id, by_name its name. The recipient must not be joined anywhere in the project.
+    dismiss({ room, agent, participantId: by, recipient, message_ids }) {
+      identifier(room, 'room'); identifier(agent, 'agent'); identifier(recipient, 'recipient')
+      if (typeof by !== 'string' || !by) throw new Error('invalid dismiss caller')
       if (message_ids !== undefined && (!Array.isArray(message_ids) || !message_ids.length || message_ids.some(id => typeof id !== 'string'))) throw new Error('invalid message_ids')
       return transact(state => {
-        const caller = requireMember(state, room, agent, sessionId, participantId)
-        const rs = state.rooms[room], messages = records(room)
+        if (!roomExists(room)) throw new Error('room does not exist')
+        // A room nobody joined or posted in through the store holds no open mail.
+        const rs = state.rooms[room]
+        if (!rs) { if (message_ids) throw new Error('message not open for this recipient'); return { room, recipient, dismissed: 0, message_ids: [] } }
+        const messages = records(room)
         const sender = message => message.from_id ?? owner(state, message.from)?.id
-        const ids = dismissMail(state, room, messages, { by: caller.participant_id, recipient, recipientId: owner(state, recipient)?.id ?? null,
+        const ids = dismissMail(state, room, messages, { by, byName: state.participants[by]?.name ?? agent, recipient, recipientId: owner(state, recipient)?.id ?? null,
           messageIds: message_ids, rows: message => recipientStates(state, rs, message, sender(message)), at: stamp() })
         return { room, recipient, dismissed: ids.length, message_ids: ids }
       })
@@ -466,6 +532,17 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
       identifier(room, 'room')
       return transact(state => records(room).filter(message => message_id === undefined || message.id === message_id).flatMap(message =>
         recipientStates(state, state.rooms[room], message, message.from_id ?? owner(state, message.from)?.id).map(row => ({ room, message_id: message.id, cursor: message.cursor, ...row }))))
+    },
+    // Mail this joined session sent in the room, newest last, with each recipient's state.
+    sentStatus({ room, agent, sessionId, participantId }) {
+      return transact(state => sentReport(state, room, requireMember(state, room, agent, sessionId, participantId).participant_id, records))
+    },
+    // The current name of whoever owns `name` now: a renamed session for its reserved old name.
+    ownerName(name) { identifier(name, 'agent'); return transact(state => owner(state, name)?.name ?? null) },
+    // 'closed' or 'not_in_room', for direct mail to a name that is not joined in the room.
+    absentReason({ room, name }) {
+      identifier(room, 'room'); identifier(name, 'agent')
+      return transact(state => absentReason(state, state.rooms[room], owner(state, name)?.id))
     },
     deliveryStatus({ room, agent } = {}) {
       if (room) identifier(room, 'room'); if (agent) identifier(agent, 'agent')

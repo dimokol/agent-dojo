@@ -51,12 +51,12 @@ test('a post result explains only the doorbells that were not accepted', async t
   await accepted.sender.call('create_room', { room: 'room', title: 'Room' })
   await accepted.join(accepted.sender, 'Sender'); await accepted.join(accepted.receiver, 'Receiver')
   const ok = await accepted.sender.call('post', { room: 'room', from: 'Sender', to: 'Receiver', message: 'hi' })
-  assert.deepEqual(ok.delivery, [{ agent: 'Receiver', transport: 'accepted' }])
+  assert.deepEqual(ok.delivery, [{ agent: 'Receiver', state: 'queued' }])
   const busy = setup(t, { status: 'pending', attempted: false, detail: 'adapter busy' })
   await busy.sender.call('create_room', { room: 'room', title: 'Room' })
   await busy.join(busy.sender, 'Sender'); await busy.join(busy.receiver, 'Receiver')
   const held = await busy.sender.call('post', { room: 'room', from: 'Sender', to: 'Receiver', message: 'hi' })
-  assert.deepEqual(held.delivery, [{ agent: 'Receiver', transport: 'pending', detail: 'adapter busy' }])
+  assert.deepEqual(held.delivery, [{ agent: 'Receiver', state: 'held', reason: 'unavailable', detail: 'adapter busy' }])
 })
 
 test('the two tools a woken Claude session needs first skip deferred tool search', () => {

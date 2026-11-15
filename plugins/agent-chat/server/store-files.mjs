@@ -14,6 +14,32 @@ export function identifier(value, name = 'identifier') {
 export function slug(value, max = 55) {
   return String(value).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/-{2,}/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, max) || 'room'
 }
+// A room name made from a title. A title whose slug is a reserved key ("constructor") gets a suffix
+// instead of failing: the title is kept as given.
+export function roomFromTitle(title) {
+  const base = slug(title)
+  try { return identifier(base, 'room') } catch { return identifier(`${base}-room`, 'room') }
+}
+// One room whose folder or files other users can read is closed on its own, with its folder and the
+// exact fix; the rest of the project keeps working. Modes are never changed behind the user's back.
+// A link, a hard link or an item owned by someone else is left to ensureDirectory and safeFile.
+export function checkRoomFolder(room, dir) {
+  const owned = stat => stat.uid === process.getuid() && !stat.isSymbolicLink()
+  const folder = fs.lstatSync(dir)
+  if (folder.isDirectory() && owned(folder)) {
+    let loose = (folder.mode & 0o077) !== 0
+    for (const name of ['room.json', 'chat.jsonl', 'chat.md']) {
+      let stat
+      try { stat = fs.lstatSync(path.join(dir, name)) } catch { continue }
+      if (stat.isFile() && owned(stat) && stat.nlink === 1 && stat.mode & 0o077) loose = true
+    }
+    if (loose) {
+      const quoted = `'${dir.replaceAll("'", "'\\''")}'`
+      throw Object.assign(new Error(`Room ${room} is closed: other users can read its folder or files. Run chmod 700 ${quoted} && chmod 600 ${quoted}/* to open it again; other rooms are unaffected.`), { code: 'CHAT_ROOM_UNSAFE', room })
+    }
+  }
+  ensureDirectory(dir)
+}
 // What the user sees for a folder ensureDirectory refuses: the folder, home-relative, and the fix.
 export function unsafeFolderLine(dir) {
   const home = os.homedir() + path.sep
