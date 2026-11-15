@@ -10,7 +10,7 @@ import { syncNotices, syncNameCache } from './notices.mjs'
 import { members as memberRows, unreadReport as unreadRows, sentReport, absentReason, receiptView } from './chat-queries.mjs'
 
 import { validState, stateDamage } from './store-schema.mjs'
-import { participantId, initializeParticipants, nameOwner, registerParticipant, renameParticipant, adoptClosedName, adoptClosedNameAsRename, reclaimRetired, settleParked, takeBackName, adoptUnresolved, completed } from './participant-identity.mjs'
+import { participantId, initializeParticipants, nameOwner, registerParticipant, renameParticipant, adoptClosedName, adoptClosedNameAsRename, reclaimRetired, settleParked, takeBackName, carryOverClear, adoptUnresolved, completed } from './participant-identity.mjs'
 import { postPolicy, isBroadcast, wakes, readState } from './message-policy.mjs'
 import { migrateReadIndex, compactReadIndex, recipientStates, directTarget } from './read-index.mjs'
 import { isDismissed, dismissMail } from './dismissals.mjs'
@@ -246,6 +246,11 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
       const session=observation?.session
       if(session?.runtime!=='claude'||!session.conversationId||typeof isLive!=='function') throw new Error('Validated Claude lifecycle observation required')
       return transact(state=>restoreClaudeMemberships(state,observation,{isLive,preserveUnconfirmed,now:now(),records}))
+    },
+    // A /clear the server noticed before its hook restored anything (participant-identity.mjs).
+    carryOverClear(session,clearedFrom) {
+      if(session?.runtime!=='claude'||!session.conversationId||!clearedFrom?.length)return []
+      return transact(state=>carryOverClear(state,session,clearedFrom,now(),records))
     },
     // The conversation a tab switched to takes back its rows and name (participant-identity.mjs).
     takeBackName(session) {

@@ -12,7 +12,7 @@ import { tools } from './tools.mjs'
 import { isBroadcast } from './message-policy.mjs'
 import { inferNativeSession, processIdentities, processIdentity, codexProfileHome, isProcessLive } from './native-session.mjs'
 import { projectRoot } from './project-scope.mjs'
-import { resolveClaudeConversation, observeClaudeLifecycle, claudeLifecycleAncestors, currentClaudeConversation, clearRegistrationRetry, clearRestoreNotice, CALL_BOUNDS } from './claude-lifecycle.mjs'
+import { resolveClaudeConversation, resolveClaudeLifecycleStart, pendingRegistrationSource, observeClaudeLifecycle, claudeLifecycleAncestors, currentClaudeConversation, clearRegistrationRetry, clearRestoreNotice, CALL_BOUNDS } from './claude-lifecycle.mjs'
 import { participantId } from './participant-identity.mjs'
 import { claudeFailureFlags } from './claude-failure-flags.mjs'
 import { readNativeLabel } from './notices.mjs'
@@ -22,7 +22,7 @@ export { projectRoot } from './project-scope.mjs'
 const { createStore, defaultChatRoot } = await import('./store.mjs')
 const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
 
-export function createService({ store, adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, isLive=isProcessLive,
+export function createService({ store, adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, lifecycleStart=resolveClaudeLifecycleStart, isLive=isProcessLive,
   observeLifecycle=observeClaudeLifecycle, currentConversation=currentClaudeConversation, reconcileEveryMs=10_000,
   // With the check off every version passes, so the version is never looked up: for a prerelease
   // tab that lookup throws, which would show a wakeable tab as not wakeable.
@@ -133,7 +133,9 @@ export function createService({ store, adapters = createAdapters(), env = proces
     try {
       const conversation = currentConversation(nativeSession.profileHome, nativeSession.clientPid, nativeSession.endpoint, nativeSession.clientStart)
       if (!conversation) return false
-      const observation = observeLifecycle({ session_id: conversation, source: 'resume', hook_event_name: 'SessionStart', cwd: store.projectRoot }, env,
+      // A failed /clear registers as a /clear, so the tab keeps its rooms (carryOverClear).
+      const source = pendingRegistrationSource(store.stateRoot, nativeSession.id) ?? 'resume'
+      const observation = observeLifecycle({ session_id: conversation, source, hook_event_name: 'SessionStart', cwd: store.projectRoot }, env,
         { stateRoot: store.stateRoot, projectRoot: store.projectRoot, scope: () => store.projectRoot })
       if (!observation) return false
       const result = store.restoreClaude({ ...observation, session: validateSession(observation.session) }, isLive)
@@ -190,6 +192,15 @@ export function createService({ store, adapters = createAdapters(), env = proces
           store.deactivateSession(old.id,{runtime:'claude',profileHome:old.profileHome,clientPid:old.clientPid,clientStart:old.clientStart,conversationId:old.conversationId},'conversation_changed')
         // The conversation switched to takes back its rows and name from the one it left here.
         const back=switched?store.takeBackName(nativeSession):[]
+        // A /clear noticed here before its hook restored anything (the restore failed or is late)
+        // keeps the tab in its rooms, as the hook would have. Unknown keeps today's rule.
+        // It follows the record's chain, not the conversation this server saw last: hooks may have
+        // switched conversations in between without a chat call.
+        if(switched&&previousConversation&&!back.length) {
+          let start=null
+          try {start=lifecycleStart(nativeSession,{stateRoot:store.stateRoot,projectRoot:store.projectRoot,ancestors:cachedAncestors})} catch {}
+          if(start?.source==='clear')back.push(...store.carryOverClear(nativeSession,start.clearedFrom))
+        }
         if(switched&&!previousConversation) {
           const id=participantId(nativeSession)
           for(const record of delivered.values())if(record.conversationId===undefined) {
@@ -376,8 +387,9 @@ export function createService({ store, adapters = createAdapters(), env = proces
       if (!held) bindings.set(key(room, agent), own[0][1])
       return
     }
-    // Only a room this session never had a row in: a left, closed or cleared membership, or a name
-    // someone else holds, stays for an explicit join_room to decide (a /clear must not inherit).
+    // Only a room this session never had a row in: a left or closed membership, or a name someone
+    // else holds, stays for an explicit join_room to decide. (The rooms a /clear keeps were moved to
+    // the new conversation by the lifecycle, carryOverClear.)
     const mine = participantId(nativeSession)
     if (store.memberships().some(member => member.room === room && (member.participant_id === mine || member.agent === agent))) return
     await checkCodexProfile()

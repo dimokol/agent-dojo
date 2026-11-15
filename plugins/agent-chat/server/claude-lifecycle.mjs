@@ -148,6 +148,7 @@ function registry(stateRoot, session, projectRoot, create) {
   const key = createHash('sha256').update(JSON.stringify([session.clientPid, session.clientStart, session.profileHome, projectRoot])).digest('hex')
   return { directory, file: path.join(directory, `${key}.json`) }
 }
+const chainOf = record => Array.isArray(record?.clearedFrom) ? record.clearedFrom.filter(id => UUID.test(id ?? '')) : []
 function readRecord(file) {
   let stat
   try { stat = fs.lstatSync(file) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
@@ -231,16 +232,25 @@ export function observeClaudeLifecycle(input, env = process.env, {
     let temporary
     try {
       const previous = readRecord(file)
+      const same = matches(previous, session, canonicalProject, endpoint)
+      // A /clear records the conversations it came from, latest first, through earlier /clears
+      // whose restore never ran (two quick /clears), so the tab's rooms can follow it. A /resume
+      // ends the chain: the rooms of a conversation resumed away from stay with it.
+      // A retry of the same /clear (its record was written, a later step failed) keeps the chain.
+      const clearedFrom = input.source !== 'clear' || !same ? []
+        : previous.conversationId === input.session_id ? (previous.source === 'clear' ? chainOf(previous) : [])
+        : [previous.conversationId, ...(previous.source === 'clear' ? chainOf(previous) : [])].filter(id => id !== input.session_id).slice(0, 8)
       const record = { schema: 1, launchId, conversationId: input.session_id, source: input.source,
-        profileHome, endpoint, clientPid: parent.pid, clientStart: parent.start, projectRoot: canonicalProject }
+        profileHome, endpoint, clientPid: parent.pid, clientStart: parent.start, projectRoot: canonicalProject,
+        ...(clearedFrom.length ? { clearedFrom } : {}) }
       temporary = path.join(directory, `${randomUUID()}.tmp`)
       const fd = fs.openSync(temporary, 'wx', 0o600)
       try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
       fs.renameSync(temporary, file); temporary = undefined
       const dirFd = fs.openSync(directory, 'r')
       try { fs.fsyncSync(dirFd) } finally { fs.closeSync(dirFd) }
-      return { session, conversationId: input.session_id, previousConversationId:
-        matches(previous, session, canonicalProject, endpoint) ? previous.conversationId : null, source: input.source }
+      return { session, conversationId: input.session_id, previousConversationId: same ? previous.conversationId : null,
+        source: input.source, clearedFrom }
     } finally {
       fs.closeSync(lockFd); fs.unlinkSync(lock)
       if (temporary) fs.unlinkSync(temporary)
@@ -268,9 +278,20 @@ export function currentClaudeConversation(profileHome, clientPid, endpoint, clie
   } catch { return null }
 }
 // A failed start leaves a marker and a prompt gate for its launch; any later registration clears them.
+// The marker keeps the start's source (claude-session-hook.mjs): a failed /clear is retried as a
+// /clear, so the tab keeps its rooms.
+const retryMarker = (stateRoot, launch) => path.join(stateRoot, 'lifecycle-failures', `pending-${launch}.json`)
+export function pendingRegistrationSource(stateRoot, launch) {
+  if (!UUID.test(launch ?? '')) return null
+  try {
+    const stat = fs.lstatSync(retryMarker(stateRoot, launch))
+    if (!stat.isFile() || stat.size > 4096) return null
+    return JSON.parse(fs.readFileSync(retryMarker(stateRoot, launch), 'utf8'))?.source === 'clear' ? 'clear' : null
+  } catch { return null }
+}
 export function clearRegistrationRetry(stateRoot, launch) {
   if (!UUID.test(launch ?? '')) return
-  for (const file of [path.join(stateRoot, 'lifecycle-failures', `pending-${launch}.json`), path.join(stateRoot, 'notices', `session-${launch}.registration.gate`)])
+  for (const file of [retryMarker(stateRoot, launch), path.join(stateRoot, 'notices', `session-${launch}.registration.gate`)])
     try { fs.unlinkSync(file) } catch {}
 }
 // A background restore that failed leaves a gate, so the prompt hook tells the tab; the next call
@@ -284,7 +305,16 @@ export function clearRestoreNotice(stateRoot, launch) {
 // has no record. A check that could not run (ps or lsof failed, a damaged or
 // unsafe record) throws, so callers keep mail and membership instead of
 // reading a busy machine as a closed tab.
-export function resolveClaudeConversation(nativeSession, {
+export function resolveClaudeConversation(nativeSession, options) {
+  return claudeLifecycleRecord(nativeSession, options)?.conversationId ?? null
+}
+// What started the tab's current conversation (startup, resume, clear, fork) and, for a /clear,
+// the conversations it came from, from the same record.
+export function resolveClaudeLifecycleStart(nativeSession, options) {
+  const record = claudeLifecycleRecord(nativeSession, options)
+  return record ? { source: record.source, clearedFrom: chainOf(record) } : null
+}
+function claudeLifecycleRecord(nativeSession, {
   stateRoot = DEFAULT_STATE, projectRoot, ancestors = pid => claudeLifecycleAncestors(pid, CALL_BOUNDS),
   validateSocket = validateClaudeLifecycleSocket,
 } = {}) {
@@ -300,6 +330,6 @@ export function resolveClaudeConversation(nativeSession, {
     if (!fs.existsSync(path.join(stateRoot, 'lifecycle'))) return null
     const { file } = registry(stateRoot, session, canonicalProject, false)
     const record = readRecord(file)
-    return matches(record, session, canonicalProject, endpoint) ? record.conversationId : null
+    return matches(record, session, canonicalProject, endpoint) ? record : null
   } catch { throw unavailable('process') }
 }

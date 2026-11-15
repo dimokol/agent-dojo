@@ -6,7 +6,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { observeClaudeLifecycle, resolveClaudeConversation, lifecycleProjectRoot, pruneClaudeLifecycle, clearRegistrationRetry, restoreGateFile, clearRestoreNotice } from './claude-lifecycle.mjs'
+import { observeClaudeLifecycle, resolveClaudeConversation, lifecycleProjectRoot, pruneClaudeLifecycle, clearRegistrationRetry, restoreGateFile, clearRestoreNotice, pendingRegistrationSource } from './claude-lifecycle.mjs'
 import { unseenFailureFlags } from './claude-failure-flags.mjs'
 import { createStore, defaultChatRoot } from './store.mjs'
 import { createAdapters, validateSession } from './adapters.mjs'
@@ -57,13 +57,13 @@ function recordFailure(stage,source) {
 // A tab whose registration failed is retried at its next prompt. The prompt hook runs only behind a
 // gate file, so the failure leaves one for this launch; success removes both.
 const retryFiles=launch=>({marker:path.join(stateRoot,'lifecycle-failures',`pending-${launch}.json`),gate:path.join(noticeDirectory(stateRoot),`session-${launch}.registration.gate`)})
-function markForRetry(stage) {
+function markForRetry(stage,source) {
   const launch=process.env.CLAUDE_CODE_SESSION_ID
   if(!UUID.test(launch??'')||stage==='install'||stage==='input')return
   try {
     const {marker,gate}=retryFiles(launch)
     ensureDirectory(path.dirname(marker));ensureDirectory(path.dirname(gate))
-    atomicJson(marker,{stage,at:new Date().toISOString(),tries:0})
+    atomicJson(marker,{stage,source:source??null,at:new Date().toISOString(),tries:0})
     fs.writeFileSync(gate,'',{mode:0o600})
   }catch{}
 }
@@ -207,13 +207,15 @@ async function retryAtPrompt(input) {
   // keeps retrying on agent-chat calls.
   if(tries>=3){clearRetry(launch);return []}
   try {atomicJson(marker,{...JSON.parse(fs.readFileSync(marker,'utf8')),tries:tries+1})}catch{}
+  // A failed /clear is retried as a /clear, so the tab keeps its rooms (carryOverClear).
+  const source=pendingRegistrationSource(stateRoot,launch)??'resume'
   try {
-    await register({session_id:input.session_id,cwd:input.cwd,source:'resume',hook_event_name:'SessionStart'},{source:'resume',restore:true,orphans:false},[],{attempts:1})
+    await register({session_id:input.session_id,cwd:input.cwd,source,hook_event_name:'SessionStart'},{source,restore:true,orphans:false},[],{attempts:1})
     clearRetry(launch)
     return ['Agent-chat registered this tab now, after its start-up attempt failed. Its rooms are back.']
   } catch(error) {
     // The start-up line already said it failed; repeating it at every prompt is noise.
-    recordFailure(error?.stage,'resume')
+    recordFailure(error?.stage,source)
     if(error?.stage==='install')clearRetry(launch)
     return []
   }
@@ -263,7 +265,7 @@ if(process.argv[1]&&path.resolve(process.argv[1])===SCRIPT) {
   try {await main(messages)}
   catch(error) {
     recordFailure(error?.stage,error?.source??null)
-    if(!process.argv.includes('--flags'))markForRetry(error?.stage)
+    if(!process.argv.includes('--flags'))markForRetry(error?.stage,error?.source)
     // An unsupported install fails the same way at every start, so it is named once a day.
     const quiet=error?.stage==='install'&&shownToday('unsupported-install')
     process.stdout.write(JSON.stringify(context([...messages,...(quiet?[]:[registrationFailureLine(error?.stage,error?.source)])])))

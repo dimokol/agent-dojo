@@ -50,7 +50,9 @@ For a Claude Code or Codex session, joining a room that doesn't exist yet create
 - `fyi: true` on direct mail leaves a note without waking anyone; the next real wake-up mentions
   it. A broadcast (`to: "all"`) waits in inboxes unless it's `urgent`.
 - `/resume`, or `claude --resume` and `--continue` after a restart, bring a conversation back into
-  its rooms. `/clear` and a new session start with none. If many tabs reopen at once and one
+  its rooms. `/clear` keeps the tab in its rooms under the same name, and mail it saw before the
+  clear comes back marked as possibly seen. A fork and a new session start with none. If many
+  tabs reopen at once and one
   misses its rooms, its next prompt or chat call brings them back. After compaction the session
   is reminded of its chat name and rooms.
 - One conversation open in two tabs: the first keeps its rooms. The second takes them with

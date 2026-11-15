@@ -72,15 +72,15 @@ test('review2 1: a tab that joined before its conversation registered keeps its 
   assert.deepEqual(await read(tab, 'r', 'Reader'), [['m2', null]])
 })
 
-test('review2 1: a late registration through the lifecycle restore (resume) keeps the rows joined before it; a /clear does not inherit them', async t => {
+// Reversed 2026-11-15 (user's call): a /clear used to leave these rows closed; it now keeps the
+// tab in them on its new conversation (ac203-clear.test.mjs).
+test('review2 1: a late registration through the lifecycle restore (resume or /clear) keeps the rows joined before it', async t => {
   for (const source of ['resume', 'clear']) {
     const f = fixture(t), home = f.profile(1)
     f.store.join({ room: 'r', agent: 'Reader', session: f.claude(L1, home) })
     const result = f.store.restoreClaude({ session: { ...f.claude(L1, home), conversationId: CONV }, source, ...(source === 'clear' ? { previousConversationId: L1 } : {}) }, () => true)
-    if (source === 'resume') {
-      assert.deepEqual(result.restored, [{ room: 'r', agent: 'Reader' }])
-      assert.deepEqual(rowsOf(f), [{ agent: 'Reader', joined: true, left: null, conversation: CONV }])
-    } else assert.deepEqual(rowsOf(f), [{ agent: 'Reader', joined: false, left: 'conversation_changed', conversation: null }])
+    assert.deepEqual(result.restored, [{ room: 'r', agent: 'Reader' }])
+    assert.deepEqual(rowsOf(f), [{ agent: 'Reader', joined: true, left: null, conversation: CONV }])
   }
 })
 

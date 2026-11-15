@@ -337,6 +337,29 @@ export function takeBackName(state,session,now,records) {
   if(!rows.length||rows.some(member=>member.joined||!sameTab(session,member.session)))return []
   return moveTo(state,session,entry.participant_id,own.previous_name,now,records,false)
 }
+// /clear starts a new conversation in the same tab, and the tab stays in its rooms: the name and
+// the rows the earlier conversation had joined here move to the new one, the way takeBackName
+// moves them on a /resume back. Mail the earlier conversation saw but never confirmed comes back
+// marked maybe_seen. A /name rename stays a rename. Rows of another tab process and rooms left on
+// purpose stay where they are. Returns the rooms joined.
+// clearedFrom lists the conversations the /clear came from, latest first (claude-lifecycle.mjs):
+// the first one that holds a name gives it, rows joined before Claude recorded it included. One
+// with no name is passed over (a /clear whose restore never ran).
+export function carryOverClear(state,session,clearedFrom,now,records) {
+  const id=participantId(session)
+  if(state.participants[id]?.name)return []
+  for(const conversation of clearedFrom) {
+    const from=participantId({...session,conversationId:conversation}), old=state.participants[from]
+    if(from===id||!old?.name)continue
+    const rows=rowsOf(state,from)
+    if(!rows.length||!rows.some(member=>member.left_reason==='conversation_changed')||
+      rows.some(member=>member.joined||!sameTab(session,member.session)||(member.session.conversationId??member.session.id)!==conversation))return []
+    const source=old.source, back=moveTo(state,session,from,old.name,now,records,false)
+    if(back.length&&source)state.participants[id].source=source
+    return back
+  }
+  return []
+}
 const rowsOf=(state,pid)=>Object.values(state.rooms).flatMap(rs=>Object.values(rs.members).filter(member=>member.participant_id===pid))
 const sameTab=(session,old)=>old?.runtime==='claude'&&old.profileHome===session.profileHome&&old.clientPid===session.clientPid&&old.clientStart===session.clientStart
 function moveTo(state,session,from,name,now,records,keep) {
