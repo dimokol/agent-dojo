@@ -124,7 +124,7 @@ test('R7: a stored post never comes back as failed when the not-in-room check th
     await service.call('join_room', { room: 'room', agent: 'a', session: { id: 'a', runtime: 'manual' } })
     const posted = await service.call('post', { room: 'room', from: 'a', to: 'b', message: 'kept' })
     assert.equal(posted.cursor, 1)
-    assert.deepEqual(posted.delivery.map(row => row.transport), ['pending'])
+    assert.deepEqual(posted.delivery.map(row => row.state), ['held'])
   } finally { service.close() }
 })
 
@@ -162,7 +162,7 @@ test('R9: a native join refused for its name leaves no room behind', async t => 
   store.join({ room: 'other', agent: 'taken', session: { id: 'someone', runtime: 'manual' } })
   const service = createService({ store: createStore(options), env: { AGENT_CHAT_CODEX_HOME: profileHome }, adapters: quiet })
   try {
-    await assert.rejects(service.call('join_room', { room: 'typo-room', agent: 'taken' }, 1, { 'x-codex-turn-metadata': { thread_id: '12345678-1234-4234-8234-123456789abc' } }), /name is owned/)
+    await assert.rejects(service.call('join_room', { room: 'typo-room', agent: 'taken' }, 1, { 'x-codex-turn-metadata': { thread_id: '12345678-1234-4234-8234-123456789abc' } }), /taken belongs to another live session/)
     assert.deepEqual(store.listRooms().map(room => room.room), ['other'])
   } finally { service.close() }
 })

@@ -39,11 +39,13 @@ test('a live owner and an explicit leave both prevent automatic takeover',t=>{
   store.leave({room:'room',agent:'PM',sessionId:A})
   assert.deepEqual(store.restoreClaude({session:next,source:'resume'},()=>false).restored,[])
 })
-test('clear closes old bindings and a later resume restores only their original conversation',t=>{
+// Reversed 2026-11-15 (user's call): /clear used to close the tab's rooms; now the tab keeps them
+// on its new conversation (ac203-clear.test.mjs), and a resume back still takes them back.
+test('clear keeps the rooms on the new conversation and a later resume takes them back',t=>{
   const {store,session}=setup(t)
   const next={...session,conversationId:B}
-  assert.equal(store.restoreClaude({session:next,source:'clear',previousConversationId:A},()=>true).restored.length,0)
-  assert.equal(store.members({room:'room'}).length,0)
+  assert.equal(store.restoreClaude({session:next,source:'clear',previousConversationId:A},()=>true).restored.length,1)
+  assert.equal(store.members({room:'room'}).length,1)
   const unrelated={...next,conversationId:C,clientPid:999}
   assert.deepEqual(store.restoreClaude({session:unrelated,source:'clear',previousConversationId:B},()=>false).restored,[])
   assert.equal(store.restoreClaude({session,source:'resume'},()=>true).restored.length,1)

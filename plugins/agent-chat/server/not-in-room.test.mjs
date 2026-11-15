@@ -20,7 +20,7 @@ test('mail to a live session in a room it has not joined is reported as not in r
   await alice.call('join_room', { room: 'b', agent: 'alice', session: { id: 'alice', runtime: 'manual' } })
   await bob.call('join_room', { room: 'a', agent: 'bob', session: { id: 'bob', runtime: 'manual' } })
   const posted = await alice.call('post', { room: 'b', from: 'alice', to: 'bob', message: 'over here' })
-  assert.deepEqual(posted.delivery, [{ agent: 'bob', transport: 'pending', detail: 'Not in this room now (closed, left or never joined); the mail waits until that name is back in it.' }])
+  assert.deepEqual(posted.delivery, [{ agent: 'bob', state: 'held', reason: 'not_in_room', detail: 'Not in this room now (left, elsewhere or never joined); the mail waits until that name is back in it.' }])
   const report = await alice.call('unread', {})
   const row = report.recipients.find(entry => entry.name === 'bob')
   assert.equal(row.rooms.find(entry => entry.room === 'b').status, 'not_in_room')
@@ -28,5 +28,5 @@ test('mail to a live session in a room it has not joined is reported as not in r
   // A recipient that left (or closed) gets the same row, with words that fit it too.
   await bob.call('leave_room', { room: 'a', agent: 'bob' })
   const left = await alice.call('post', { room: 'a', from: 'alice', to: 'bob', message: 'still there?' })
-  assert.deepEqual(left.delivery, [{ agent: 'bob', transport: 'pending', detail: 'Not in this room now (closed, left or never joined); the mail waits until that name is back in it.' }])
+  assert.deepEqual(left.delivery, [{ agent: 'bob', state: 'held', reason: 'not_in_room', detail: 'Not in this room now (left, elsewhere or never joined); the mail waits until that name is back in it.' }])
 })

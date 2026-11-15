@@ -68,7 +68,8 @@ test('uncertain native delivery stays readable and does not rerun itself', async
   assert.equal(s.calls.length, before)
   const inbox = await s.second.call('inbox', { room: 'room', agent: 'Receiver' })
   assert.equal(inbox.length, 1)
-  assert.equal(receipt(s.store, 'Receiver').status, 'notified')
+  assert.equal(receipt(s.store, 'Receiver').status, 'dispatching')
+  assert.equal(receipt(s.store, 'Receiver').reason, 'write_uncertain')
 })
 
 test('sender alias belongs to its joined MCP connection', async t => {
@@ -173,7 +174,8 @@ test('receipts are scripted after a delivered response and a later client call',
   assert.deepEqual(await s.second.call('inbox', args), [])
 })
 
-test('consumer close keeps delivered content with its original owner', async t => {
+// 2.0.3: a successor taking over the closed name gets the read-but-unconfirmed mail, marked (user decision).
+test('consumer close: a successor on the name gets read-but-unconfirmed mail marked maybe_seen', async t => {
   const s = setup(t)
   await s.first.call('create_room', { room: 'room', title: 'Test room' })
   await s.join(s.first, 'Sender'); await s.join(s.second, 'Receiver')
@@ -183,9 +185,11 @@ test('consumer close keeps delivered content with its original owner', async t =
   s.second.written('inbox', args, inbox)
   s.second.close()
   await s.first.call('join_room', { room: 'room', agent: 'Receiver', session: { runtime: 'manual', id: 'Successor' } })
-  assert.deepEqual(await s.first.call('inbox', args), [])
+  const again = await s.first.call('inbox', args)
+  assert.deepEqual(again.filter(item => item.message_id).map(item => [item.message_id, item.maybe_seen]), [[inbox[0].message_id, true]])
+  assert.match(again.at(-1).note, /maybe_seen/)
   const state=JSON.parse(fs.readFileSync(s.store.statePath,'utf8'))
-  assert.equal(Object.values(state.rooms.room.retired_members)[0].deliveries[inbox[0].message_id].status,'delivered')
+  assert.equal(Object.values(state.rooms.room.retired_members)[0].deliveries[inbox[0].message_id],undefined)
 })
 
 test('mail that arrives after the inbox response rings without another receiver call', async t => {
@@ -209,7 +213,7 @@ test('an active alias cannot be claimed with the same ID through another connect
   const s = setup(t)
   await s.first.call('create_room', { room: 'room', title: 'Test room' })
   await s.join(s.first, 'Sender')
-  await assert.rejects(s.join(s.second, 'Sender'), /already joined/)
+  await assert.rejects(s.join(s.second, 'Sender'), /Sender belongs to another live session/)
 })
 
 test('native Codex metadata rejects blocking wait without shell registration', async t => {
@@ -239,7 +243,10 @@ test('a late delivery callback and stale receipt after departure do not brick th
   assert.doesNotThrow(() => s.second.written('inbox', args, inbox, 101))
   await s.second.call('list_rooms', {}, 2, undefined, 102)
   await s.join(s.second, 'Receiver')
-  assert.equal((await s.second.call('inbox', args)).length, 1)
+  // 2.0.3: its receipt was never confirmed, so it comes back once, marked maybe_seen, with a note.
+  const again = await s.second.call('inbox', args)
+  assert.deepEqual(again.filter(item => item.message_id).map(item => [item.message_id, item.maybe_seen]), [[inbox[0].message_id, true]])
+  assert.match(again.at(-1).note, /maybe_seen/)
 })
 
 test('damaged metadata permits only a previously bound sender with matching native identity', async t => {
@@ -253,7 +260,7 @@ test('damaged metadata permits only a previously bound sender with matching nati
     fs.writeFileSync(s.store.statePath, '{damaged')
     const args = { room: 'room', from: 'Sender', to: 'Receiver', message: 'Durable during recovery', idempotency_key: 'recovery' }
     const posted = await s.first.call('post', args, 3, meta)
-    assert.equal(posted.delivery[0].transport, 'pending')
+    assert.equal(posted.delivery[0].state, 'held')
     const retried = await s.first.call('post', args, 4, meta)
     assert.equal(retried.message_id, posted.message_id)
     assert.equal(retried.duplicate, true)

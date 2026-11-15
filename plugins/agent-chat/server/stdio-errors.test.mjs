@@ -53,6 +53,6 @@ test('fixable errors reach the client word for word', async t => {
     'message must contain 1 to 200000 characters',
     'idempotency key reused with different message',
     'message not pending for this session',
-    'name is owned by another session already joined or reserved',
+    'Me belongs to another live session; join under another name',
   ])
 })

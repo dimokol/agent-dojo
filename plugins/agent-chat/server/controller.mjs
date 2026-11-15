@@ -1,4 +1,18 @@
 import { wakes, readState } from './message-policy.mjs'
+// Short words for the sender when a ring is held for a reason it can act on or wait out.
+const heldDetail = {
+  budget: 'Ring cap reached (30 per agent in a room, 120 per project, per 10 minutes). The mail waits; the next post or read after that rings it.',
+  not_read_since_last_ring: 'Already rung and not read yet; the next ring names this mail too. Nothing to do.',
+  write_uncertain: 'The ring may not have arrived. It is not sent again by itself, to avoid a duplicate. The mail waits; if no reply comes, a new post rings again once the tab reads its inbox or after 15 minutes.',
+}
+// One adapter outcome as the sender sees it: rung, queued, or held with a reason.
+// Anything that failed after the write started is uncertain, whatever the adapter called it.
+function view(outcome) {
+  if (outcome.attempted !== false && outcome.status === 'rung') return { state: 'rung' }
+  if (outcome.attempted !== false && outcome.status === 'accepted') return { state: 'queued' }
+  const reason = outcome.attempted === false ? outcome.reason ?? 'unavailable' : 'write_uncertain'
+  return { state: 'held', reason, detail: heldDetail[reason] ?? outcome.detail }
+}
 // A post causes one bounded delivery attempt. There is no idle timer or model loop.
 // cancelGraceMs: how long a cancelled delivery gets to finish the step it's in. A Codex presence
 // check can't be cancelled and takes up to 3 s, so the grace covers it.
@@ -27,9 +41,10 @@ export function createController({ store, adapters, dispatchTimeoutMs = 20_000, 
         const fyi = quiet.length ? { fyi: { count: quiet.length, message_ids: quiet.slice(0, 50).map(message => message.id) } } : {}
         // One doorbell directs the receiver to the entire durable inbox.
         if (!pending.length) return
-        const ids = store.claim({ ...identity, message_ids: pending.map(message => message.id) })
+        const { ids, held } = store.claim({ ...identity, message_ids: pending.map(message => message.id), explain: true })
         if (!ids.length) {
-          results.push({ agent: member.agent, transport: 'pending', detail: 'Awaiting receipt or automatic ring budget; unread mail is retained.' })
+          const reason = held ?? 'unavailable'
+          results.push({ agent: member.agent, state: 'held', reason, detail: heldDetail[reason] })
           return
         }
         const claimId = store.assertMember(room, member.agent, member.session.id,member.participant_id).deliveries[ids[0]].claim_id
@@ -44,19 +59,22 @@ export function createController({ store, adapters, dispatchTimeoutMs = 20_000, 
           // that as notified would hold the member silent for the whole ring-claim window.
           if (outcome === null) {
             const settled = await Promise.race([delivery, new Promise(resolve => { timer = setTimeout(resolve, cancelGraceMs, null) })])
-            outcome = settled?.attempted === false ? settled : { status: 'pending', detail: 'Delivery deadline reached; outcome uncertain, inbox retained.' }
+            outcome = settled?.attempted === false ? settled : { status: 'pending', detail: 'Delivery deadline reached; outcome uncertain, mail kept.' }
           }
-        } catch { outcome = { status: 'pending', detail: 'Delivery outcome uncertain; inbox retained.' } }
+        } catch { outcome = { status: 'pending', detail: 'Delivery outcome uncertain; mail kept.' } }
         finally { clearTimeout(timer) }
-        // Uncertain writes are not retried automatically. A receiver can still fetch and ack.
+        // Uncertain writes are not retried automatically: they stay dispatching under their claim,
+        // which holds back further rings like a notified one. A receiver can still fetch and ack.
         // An explicit retry can duplicate a doorbell, never a canonical message ID.
+        const result = view(outcome)
         try {
-          const updated = store.updateDelivery({ ...identity, message_ids: ids, expected_claim_id: claimId, status: outcome.attempted === false ? 'pending' : 'notified', error: outcome.detail, release_claim: outcome.attempted === false })
+          const status = outcome.attempted === false ? 'pending' : result.state === 'held' ? 'dispatching' : 'notified'
+          const updated = store.updateDelivery({ ...identity, message_ids: ids, expected_claim_id: claimId, status, outcome: { ...result, detail: result.state === 'held' ? outcome.detail : undefined }, release_claim: outcome.attempted === false })
           if (outcome.offline && updated.length) store.deactivateSession(member.session.id, member.session)
         } catch {
           // Membership may have left while native I/O was active. Claimed records remain durable.
         }
-        results.push({ agent: member.agent, message_ids: ids, transport: outcome.status, detail: outcome.detail })
+        results.push({ agent: member.agent, message_ids: ids, ...result })
       }))
       return results
     },

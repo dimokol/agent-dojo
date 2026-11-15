@@ -6,7 +6,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { observeClaudeLifecycle, resolveClaudeConversation, lifecycleProjectRoot, pruneClaudeLifecycle, clearRegistrationRetry } from './claude-lifecycle.mjs'
+import { observeClaudeLifecycle, resolveClaudeConversation, lifecycleProjectRoot, pruneClaudeLifecycle, clearRegistrationRetry, restoreGateFile, clearRestoreNotice, pendingRegistrationSource } from './claude-lifecycle.mjs'
 import { unseenFailureFlags } from './claude-failure-flags.mjs'
 import { createStore, defaultChatRoot } from './store.mjs'
 import { createAdapters, validateSession } from './adapters.mjs'
@@ -14,7 +14,7 @@ import { createController } from './controller.mjs'
 import { isProcessLive } from './native-session.mjs'
 import { scheduleVerification, verificationStatus } from './claude-auto-verify.mjs'
 import { isVerifiedVersion, installedClaudeVersion } from './claude-versions.mjs'
-import { ensureDirectory, safeFile, atomicJson, unsafeFolderLine } from './store-files.mjs'
+import { ensureDirectory, safeFile, atomicJson, unsafeFolderLine, canonicalRoot, predictProjectDirectory } from './store-files.mjs'
 import { projectNoticeId, dailyOrphanLine, sessionUnreadLine, noticeDirectory } from './notices.mjs'
 import { claudeProfileHome, UUID, pruneHousekeeping, readShown, recordShown } from './notice-files.mjs'
 
@@ -57,17 +57,29 @@ function recordFailure(stage,source) {
 // A tab whose registration failed is retried at its next prompt. The prompt hook runs only behind a
 // gate file, so the failure leaves one for this launch; success removes both.
 const retryFiles=launch=>({marker:path.join(stateRoot,'lifecycle-failures',`pending-${launch}.json`),gate:path.join(noticeDirectory(stateRoot),`session-${launch}.registration.gate`)})
-function markForRetry(stage) {
+function markForRetry(stage,source) {
   const launch=process.env.CLAUDE_CODE_SESSION_ID
   if(!UUID.test(launch??'')||stage==='install'||stage==='input')return
   try {
     const {marker,gate}=retryFiles(launch)
     ensureDirectory(path.dirname(marker));ensureDirectory(path.dirname(gate))
-    atomicJson(marker,{stage,at:new Date().toISOString(),tries:0})
+    atomicJson(marker,{stage,source:source??null,at:new Date().toISOString(),tries:0})
     fs.writeFileSync(gate,'',{mode:0o600})
   }catch{}
 }
 const clearRetry=launch=>clearRegistrationRetry(stateRoot,launch)
+// The tab registered but its rooms didn't come back. The gate makes prompt.sh run the prompt hook,
+// which says so until a later call rejoins them (the MCP server removes the gate then).
+export const RESTORE_LINE="agent-chat couldn't rejoin your rooms; your next chat call retries"
+function markRestoreFailed(launch) {
+  if(!UUID.test(launch??''))return
+  try {const gate=restoreGateFile(stateRoot,launch);ensureDirectory(path.dirname(gate));fs.writeFileSync(gate,'',{mode:0o600})}catch{}
+}
+function restoreNotice() {
+  const launch=process.env.CLAUDE_CODE_SESSION_ID
+  if(!UUID.test(launch??''))return []
+  try {const stat=fs.lstatSync(restoreGateFile(stateRoot,launch));return stat.isFile()&&stat.uid===process.getuid()?[RESTORE_LINE]:[]}catch{return []}
+}
 // "Checking" is true only before or during the one attempt; a failed attempt
 // is reported by the failure line and never retried automatically.
 export function verificationNotice(getVersion=currentVersion,verified=version=>isVerifiedVersion(version,{stateRoot}),status=version=>verificationStatus(version,{stateRoot}).status) {
@@ -101,8 +113,9 @@ async function worker(file) {
   try {
     safeFile(file)
     const task=JSON.parse(fs.readFileSync(file,'utf8'))
-    try {await registerWithRetry(()=>restore(task),{delayMs:1000})}
-    catch {recordFailure('restore',task.observation?.source)}
+    const launch=task.observation?.session?.id
+    try {await registerWithRetry(()=>restore(task),{delayMs:1000});clearRestoreNotice(stateRoot,launch)}
+    catch {recordFailure('restore',task.observation?.source);markRestoreFailed(launch)}
   } finally {try {fs.unlinkSync(file)} catch {}}
   // Housekeeping only: a failed pass removes nothing and the next tab start retries it.
   try {pruneClaudeLifecycle({stateRoot})} catch {}
@@ -136,6 +149,21 @@ export function unsafeChatRootLine(root=chatRoot) {
   } catch {return []}
   return [unsafeFolderLine(root)]
 }
+// The same for this project's own folder and its rooms folder: the server refuses to start on
+// either, so all of the project's rooms are down until the user fixes the mode. Only a folder this
+// project has claimed counts; another project's of the same name is not this tab's business.
+export function unsafeProjectLines(projectRoot,root=chatRoot) {
+  try {
+    const {dir,claimed}=predictProjectDirectory(path.resolve(canonicalRoot(root)),projectRoot)
+    if(!claimed)return []
+    for(const folder of [dir,path.join(dir,'rooms')]) {
+      let stat
+      try {stat=fs.lstatSync(folder)}catch{continue}
+      if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||stat.mode&0o077)return [unsafeFolderLine(folder)]
+    }
+  } catch {}
+  return []
+}
 // Up to three attempts a second apart: a burst of tabs starting together is the usual cause, and
 // one retry wasn't enough at load 18 to 45. No new attempt once the hook has run for retryBeforeMs,
 // so startup stays inside Claude's 60 s hook timeout even with git's 10 s bound.
@@ -156,6 +184,7 @@ async function register(input,plan,messages,retry={}) {
     try {return lifecycleProjectRoot(input.cwd)}catch(error){throw Object.assign(error,{stage:error.stage??'project'})}
   },retry).catch(withSource)
   if(plan.orphans)messages.push(...orphanNotice(projectRoot))
+  if(!retry.attempts)messages.push(...unsafeProjectLines(projectRoot))
   const observation=await registerWithRetry(()=>observeClaudeLifecycle({...input,source:plan.source},process.env,{stateRoot,projectRoot,scope:()=>projectRoot}),retry)
     .catch(withSource)
   if(!observation)return false
@@ -178,13 +207,15 @@ async function retryAtPrompt(input) {
   // keeps retrying on agent-chat calls.
   if(tries>=3){clearRetry(launch);return []}
   try {atomicJson(marker,{...JSON.parse(fs.readFileSync(marker,'utf8')),tries:tries+1})}catch{}
+  // A failed /clear is retried as a /clear, so the tab keeps its rooms (carryOverClear).
+  const source=pendingRegistrationSource(stateRoot,launch)??'resume'
   try {
-    await register({session_id:input.session_id,cwd:input.cwd,source:'resume',hook_event_name:'SessionStart'},{source:'resume',restore:true,orphans:false},[],{attempts:1})
+    await register({session_id:input.session_id,cwd:input.cwd,source,hook_event_name:'SessionStart'},{source,restore:true,orphans:false},[],{attempts:1})
     clearRetry(launch)
     return ['Agent-chat registered this tab now, after its start-up attempt failed. Its rooms are back.']
   } catch(error) {
     // The start-up line already said it failed; repeating it at every prompt is noise.
-    recordFailure(error?.stage,'resume')
+    recordFailure(error?.stage,source)
     if(error?.stage==='install')clearRetry(launch)
     return []
   }
@@ -214,6 +245,7 @@ async function main(messages) {
   if(!prompt)messages.push(...unsafeChatRootLine())
   if(prompt){
     messages.push(...await retryAtPrompt(input))
+    messages.push(...restoreNotice())
     messages.push(...unreadNotice(input))
     process.stdout.write(JSON.stringify(context(messages)));return
   }
@@ -233,7 +265,7 @@ if(process.argv[1]&&path.resolve(process.argv[1])===SCRIPT) {
   try {await main(messages)}
   catch(error) {
     recordFailure(error?.stage,error?.source??null)
-    if(!process.argv.includes('--flags'))markForRetry(error?.stage)
+    if(!process.argv.includes('--flags'))markForRetry(error?.stage,error?.source)
     // An unsupported install fails the same way at every start, so it is named once a day.
     const quiet=error?.stage==='install'&&shownToday('unsupported-install')
     process.stdout.write(JSON.stringify(context([...messages,...(quiet?[]:[registrationFailureLine(error?.stage,error?.source)])])))

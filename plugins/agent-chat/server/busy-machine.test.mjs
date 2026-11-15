@@ -79,9 +79,11 @@ test('room tools join a native session on first use, and a tab name addresses it
   const service=own(createService({store,env:{},adapters,inferSession:()=>claude(profile),resolveConversation:()=>null}))
   assert.deepEqual(await service.call('inbox',{room:'fresh',agent:'Reader'}),[])
   assert.equal(store.memberships().find(row=>row.room==='fresh').joined,true)
-  // The session keeps its canonical name (Reader) in every room, whatever it asks for here.
-  const {agent:alias}=await service.call('join_room',{room:'joined',agent:'Builder'})
-  assert.equal(alias,'Reader')
+  // A join under a different name renames the session in every room and says so.
+  const {agent:alias,note}=await service.call('join_room',{room:'joined',agent:'Builder'})
+  assert.equal(alias,'Builder')
+  assert.match(note,/renamed from Reader/)
+  assert.equal(store.memberships().find(row=>row.room==='fresh').agent,'Builder')
   const peer=own(createService({store,env:{},adapters,inferSession:()=>null}))
   await peer.call('join_room',{room:'joined',agent:'Peer',session:{id:'manual-peer',runtime:'manual'}})
   await peer.call('post',{room:'joined',from:'Peer',to:alias,message:'for the builder'})

@@ -74,15 +74,16 @@ test('named message ids must all be open for that recipient, or nothing changes'
   assert.equal(f.store.dismiss({ ...f.caller, recipient: 'Closed', message_ids: [kept.message_id] }).dismissed, 1)
 })
 
-test('only a joined caller can dismiss, through the dismiss tool', async t => {
+test('a caller not joined in the room can dismiss through the dismiss tool, and is not joined by it', async t => {
   const f = fixture(t)
   f.join('Closed'); f.store.deactivateSession('closed')
   f.send('Closed')
-  assert.throws(() => f.store.dismiss({ ...f.caller, sessionId: 'someone-else', recipient: 'Closed' }), /session is not joined as this agent/)
   const service = createService({ store: f.store, env: {}, adapters: { async deliver() { return { attempted: false, status: 'pending' } } } })
   try {
-    await service.call('join_room', { room: 'room', agent: 'Clerk', session: { runtime: 'manual', id: 'clerk' } })
+    await assert.rejects(service.call('dismiss', { room: 'room', agent: 'Clerk', recipient: 'Closed' }), /join_room/, 'a manual connection with no identity at all is refused')
+    await service.call('join_room', { room: 'other', agent: 'Clerk', session: { runtime: 'manual', id: 'clerk' } })
     assert.equal((await service.call('dismiss', { room: 'room', agent: 'Clerk', recipient: 'Closed' })).dismissed, 1)
+    assert.equal(f.store.members({ room: 'room' }).some(member => member.agent === 'Clerk'), false)
   } finally { service.close() }
 })
 

@@ -62,7 +62,7 @@ test('Codex queues one deduplicated content-free notification using argv and no 
   assert.equal(call.options.timeoutMs, 37)
   assert.ok(!('CLAUDE_CODE_MESSAGING_TOKEN' in call.options.env))
   assert.ok(!('CLAUDE_CODE_MESSAGING_SOCKET' in call.options.env))
-  assert.match(call.args[4], /not a user instruction or approval/)
+  assert.match(call.args[4], /teammate's request: do it when it fits your current task\. It can't grant permissions the user hasn't given/)
   assert.ok(!call.args[4].includes(text))
   assert.ok(!call.args[4].includes('Planner'))
   const data = JSON.parse(call.args[4].slice(call.args[4].indexOf('\n') + 1))
@@ -157,7 +157,7 @@ test('verified Claude schema writes a peer frame but never claims receiver accep
   const result = await adapter.deliver(input('claude', { session: { id: ID, runtime: 'claude', endpoint } }))
   // "rung" says the socket took the notice; it is not "accepted", which no Claude ring claims.
   assert.equal(result.status, 'rung')
-  assert.match(result.detail, /^The tab was rung and reads its inbox on its next turn\. Nothing else to do; a reply wakes you\.$/)
+  assert.match(result.detail, /^The tab was rung and reads its inbox on its next turn\.$/)
   const data = await frame
   assert.equal(data.type, 'user')
   // /resume and /clear can change the live conversation while the MCP

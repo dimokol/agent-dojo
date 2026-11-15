@@ -19,7 +19,8 @@ test('lost lifecycle resolution cannot rejoin an old conversation through its la
  t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true})})
  store.createRoom({room:'room',title:'Owned room'})
  await service.call('join_room',{room:'room',agent:'Reader'})
- store.restoreClaude({session:{...session,conversationId:fresh},source:'clear',previousConversationId:old},()=>true)
+ // A /resume to another conversation (a /clear now keeps the rooms, ac203-clear.test.mjs).
+ store.restoreClaude({session:{...session,conversationId:fresh},source:'resume',previousConversationId:old},()=>true)
  assert.equal(store.memberships()[0].left_reason,'conversation_changed')
  conversation=null
  await assert.rejects(service.call('inbox',{room:'room',agent:'Reader'}),/registration is still pending/)
@@ -29,7 +30,9 @@ test('lost lifecycle resolution cannot rejoin an old conversation through its la
  assert.deepEqual(store.history({room:'room'}),[])
 })
 
-test('clear cannot inherit a legacy alias that has only a launch identity',async t=>{
+// Reversed 2026-11-15 (user's call): a /clear used to drop this tab's launch-identity row; the
+// same tab now keeps it on its new conversation (ac203-clear.test.mjs).
+test('clear keeps a legacy alias of the same tab that has only a launch identity',async t=>{
  const root=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'agent-chat-legacy-clear-'))
  const store=createStore({root:path.join(root,'chats'),stateRoot:path.join(root,'state'),projectRoot:root})
  const self=processIdentity(process.pid)
@@ -40,10 +43,11 @@ test('clear cannot inherit a legacy alias that has only a launch identity',async
  store.createRoom({room:'room',title:'Legacy room'})
  store.join({room:'room',agent:'LegacyReader',session})
  store.restoreClaude({session:{...session,conversationId:fresh},source:'clear',previousConversationId:launch},()=>true)
- assert.equal(store.memberships()[0].left_reason,'conversation_changed')
  await service.call('list_rooms')
- assert.equal(store.memberships()[0].joined,false)
- await assert.rejects(service.call('inbox',{room:'room',agent:'LegacyReader'}),/join_room/)
+ const row=store.memberships().find(member=>member.agent==='LegacyReader')
+ assert.equal(row.joined,true)
+ assert.equal(row.session.conversationId,fresh)
+ assert.deepEqual(await service.call('inbox',{room:'room',agent:'LegacyReader'}),[])
 })
 
 // Seen live 2026-10-19: a resumed tab's MCP server is spawned with a fresh

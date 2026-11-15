@@ -22,8 +22,9 @@ export function validState(state) {
         if(!/^[a-f0-9]{64}$/.test(id)||!object(row)||row.id!==id||!count(row.owner_since)||typeof row.source!=='string')return false
         if(row.name!==null)identifier(row.name)
       }
+      // Keys are lowercased names: "Constructor" owns "constructor", which identifier() refuses as a name.
       for(const [name,row] of Object.entries(state.nameOwners)) {
-        identifier(name)
+        if(!/^[a-z0-9._-]{1,64}$/.test(name)||['.','..','__proto__'].includes(name))return false
         if(name!==name.toLowerCase()||!object(row)||!state.participants[row.participant_id]||!count(row.owner_since)||(row.retired_at!==undefined&&!count(row.retired_at)))return false
       }
     } else if(state.nameOwners!==undefined)return false
