@@ -1,4 +1,8 @@
-# Windows checkouts: shell scripts and hash lists must keep LF, the helper is binary.
+# Windows checkouts: Git for Windows checks out CRLF by default, and bash then fails on the \r.
+# Claude Code on Windows runs hooks and the status line through Git Bash. The helper is binary.
 *.sh text eol=lf
 *.sha256 text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.json text eol=lf
 *.exe binary

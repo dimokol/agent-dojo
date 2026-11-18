@@ -24,7 +24,7 @@
     {
       "name": "machine-pressure",
       "source": "./plugins/machine-pressure",
-      "description": "Refuses a second e2e or docker run, and any heavy command while CPU, memory or disk pressure is RED, plus a statusline script you add by hand.",
+      "description": "Refuses a second e2e or docker run, and any heavy command while CPU, memory or disk pressure is RED, plus a shared status line that renders every tab from one process.",
       "category": "machine"
     },
     {
@@ -34,9 +34,15 @@
       "category": "machine"
     },
     {
+      "name": "lazy-mcp",
+      "source": "./plugins/lazy-mcp",
+      "description": "Starts a stdio MCP server only when one of its tools is called, so servers most sessions never use stop costing memory in every tab.",
+      "category": "machine"
+    },
+    {
       "name": "worktree-hygiene",
       "source": "./plugins/worktree-hygiene",
-      "description": "A read-only audit to run at session start: free disk, merged-PR worktrees, idle dependency folders and orphaned dev servers. Proposes removals, never deletes.",
+      "description": "An audit to run at session start: free disk, merged-PR worktrees, idle dependency folders and orphaned dev servers. Proposes removals; an opt-in hook removes merged, clean, idle worktrees on its own.",
       "category": "machine"
     },
     {

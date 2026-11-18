@@ -88,6 +88,7 @@ eq "field load" "load 2.4" "$(probe --field load)"
 eq "field disk" "disk 100G" "$(probe --field disk)"
 eq "field level" "pressure OK" "$(probe --field level)"
 probe --field bogus >/dev/null 2>&1; eq "bad field exits 2" 2 $?
+eq "segments: all six in one run" "CPU 10%|RAM 50%|swap 50%|load 2.4|disk 100G|pressure OK|" "$(probe --segments | tr '\036' '|')"
 c=$(PCOLOR= probe --field level); eq "green when OK" "$(printf '\033[32mpressure OK\033[0m')" "$c"
 
 echo "== macOS: thresholds =="

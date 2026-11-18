@@ -56,6 +56,10 @@ Estimated recovery: ~<size>
 
 Every proposed command is for the user to approve. Do not run `git worktree remove`, `rm`, `kill` or `docker prune` until they say yes for that item. Use `git worktree remove` without `--force` so git refuses on dirty trees.
 
+## Automatic sweep
+
+The plugin also ships `scripts/worktree-sweep.sh`, a SessionStart hook that does nothing unless the user turned on `auto_sweep`. When asked "what would the sweep remove", run it with `--dry-run` from the repo (or with `WORKTREE_SWEEP_ROOTS` set) and show its `DRY` lines. It changes nothing in that mode. Never turn `auto_sweep` on for the user; point them to `/plugin configure worktree-hygiene@dimokol`.
+
 ## Related
 
 - Whether a branch duplicates work already on trunk: use the `verify-before-building` plugin.

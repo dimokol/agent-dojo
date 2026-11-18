@@ -6,6 +6,8 @@
 #   pressure.sh --json          machine-readable (used by the heavy-op gate)
 #   pressure.sh --statusline    one colored line for a Claude Code statusLine
 #   pressure.sh --field NAME    one colored segment: cpu | ram | swap | load | disk | level
+#   pressure.sh --segments      all six segments in one run, each followed by \036 (the shared
+#                               status line server reads this)
 #
 # Levels: OK, AMBER, RED, or UNKNOWN. The level is the worst of the signals that
 # could be read. If no signal can be read (unsupported OS, failed reads) the
@@ -275,6 +277,11 @@ case "${1:-}" in
       "$(seg "$s_swap" "$t_swap")" "$(seg "$s_load" "$t_load")" "$(seg "$s_disk" "$t_disk")" \
       "$(seg "$worst" "$t_level")"
     ;;
+  --segments)
+    for _s in "$s_cpu:$t_cpu" "$s_ram:$t_ram" "$s_swap:$t_swap" "$s_load:$t_load" "$s_disk:$t_disk" "$worst:$t_level"; do
+      seg "${_s%%:*}" "${_s#*:}"; printf '\036'
+    done
+    ;;
   --field)
     case "${2:-}" in
       cpu)   seg "$s_cpu" "$t_cpu" ;;
@@ -290,6 +297,6 @@ case "${1:-}" in
     printf '%s | %s | %s | %s | %s | %s | %s\n' "$level" "$t_cpu" "$t_ram" "$t_swap" "$t_load" "$t_disk" "$verdict"
     ;;
   *)
-    echo "usage: pressure.sh [--json | --statusline | --field NAME]" >&2; exit 2
+    echo "usage: pressure.sh [--json | --statusline | --segments | --field NAME]" >&2; exit 2
     ;;
 esac
