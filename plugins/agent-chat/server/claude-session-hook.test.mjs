@@ -164,6 +164,9 @@ test('the failure line shows once per session; another session or a new failure 
   assert.match(f.run([],start(f,'startup'),{CLAUDE_CODE_SESSION_ID:LAUNCH3}),/2\.1\.999/)
   assert.equal(prompt(LAUNCH3),'{}','startup already showed it to this session')
   assert.equal(claudeFailureFlags(f.stateRoot).length,2,'delivery_status still lists every failure')
+  // The shared daemon passes each tab's own environment: a tab with the check off sees no flags.
+  assert.deepEqual(claudeFailureFlags(f.stateRoot,Date.now(),{AGENT_CHAT_VERSION_CHECK:'off'}),[])
+  assert.equal(claudeFailureFlags(f.stateRoot,Date.now(),{AGENT_CHAT_VERSION_CHECK:'on'}).length,2)
   for(const name of fs.readdirSync(path.join(f.stateRoot,'shown')))assert.equal(fs.statSync(path.join(f.stateRoot,'shown',name)).mode&0o777,0o600)
 })
 test('a second startup the same day stays quiet about orphan mail',t=>{

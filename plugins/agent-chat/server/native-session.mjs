@@ -43,13 +43,21 @@ export function processIdentities(pids, { executor = execFileSync, signal = proc
   return result
 }
 
-// This process's own start time can't change, so it is looked up once: every native call used to
-// spawn ps for it, and a ps that timed out on a busy machine failed the whole call.
-let ownIdentity = null
+// A server's own start time can't change, so it is looked up once: every native call used to
+// spawn ps for it, and a ps that timed out on a busy machine failed the whole call. The shared
+// daemon serves each tab through a bridge process, which stands in for the server: its PID is
+// adopted while its connection lasts, so its identity is cached the same way.
+const ownPids = new Set([process.pid])
+const ownIdentities = new Map()
+export function adoptProcess(pid) { ownPids.add(pid) }
+export function releaseProcess(pid) { if (pid !== process.pid) { ownPids.delete(pid); ownIdentities.delete(pid) } }
+const knownOwn = pid => ownPids.has(pid) ? ownIdentities.get(pid) ?? null : null
+const rememberOwn = (pid, identity) => { if (ownPids.has(pid) && identity) ownIdentities.set(pid, identity) }
 export function processIdentity(pid) {
-  if (pid === process.pid && ownIdentity) return ownIdentity
+  const known = knownOwn(pid)
+  if (known) return known
   const identity = processIdentities([pid]).get(pid) ?? null
-  if (pid === process.pid && identity) ownIdentity = identity
+  rememberOwn(pid, identity)
   return identity
 }
 
@@ -168,11 +176,11 @@ export function inferNativeSession(meta, env = process.env, { pid = process.pid,
   }
   if (!UUID.test(env.CLAUDE_CODE_SESSION_ID ?? '') || !env.CLAUDE_CODE_MESSAGING_SOCKET) return null
   const profileHome = profile(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'))
-  const known = pid === process.pid ? ownIdentity : null
+  const known = knownOwn(pid)
   const identities = processIdentities(known ? [ppid] : [pid, ppid])
   const parent = identities.get(ppid)
   const server = known ?? identities.get(pid)
-  if (pid === process.pid && server && !ownIdentity) ownIdentity = server
+  if (!known) rememberOwn(pid, server)
   const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET
   let isClaudeParent = false, executable, unknown = false
   try {

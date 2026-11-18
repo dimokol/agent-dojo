@@ -11,7 +11,7 @@ import { createController } from './controller.mjs'
 import { tools } from './tools.mjs'
 import { isBroadcast } from './message-policy.mjs'
 import { inferNativeSession, processIdentities, processIdentity, codexProfileHome, isProcessLive } from './native-session.mjs'
-import { projectRoot } from './project-scope.mjs'
+import { projectRoot, projectRootAsync } from './project-scope.mjs'
 import { resolveClaudeConversation, resolveClaudeLifecycleStart, pendingRegistrationSource, observeClaudeLifecycle, claudeLifecycleAncestors, currentClaudeConversation, clearRegistrationRetry, clearRestoreNotice, CALL_BOUNDS } from './claude-lifecycle.mjs'
 import { participantId } from './participant-identity.mjs'
 import { claudeFailureFlags } from './claude-failure-flags.mjs'
@@ -22,12 +22,18 @@ export { projectRoot } from './project-scope.mjs'
 const { createStore, defaultChatRoot } = await import('./store.mjs')
 const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
 
-export function createService({ store, adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, lifecycleStart=resolveClaudeLifecycleStart, isLive=isProcessLive,
+// proc is the process that stands for this tab's server: this process for a server Claude or Codex
+// started, the tab's bridge for a connection to the shared daemon. Its parent is the tab.
+// A tab that sets AGENT_CHAT_VERSION_CHECK decides for itself; otherwise this process's setting does,
+// which for the shared daemon is the distribution default (bridges never hand it to the daemon).
+const versionEnv = env => env.AGENT_CHAT_VERSION_CHECK !== undefined ? env : process.env
+export const ownProcess = () => ({ pid: process.pid, ppid: process.ppid, cwd: process.cwd() })
+export function createService({ store, proc = ownProcess(), adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, lifecycleStart=resolveClaudeLifecycleStart, isLive=isProcessLive,
   observeLifecycle=observeClaudeLifecycle, currentConversation=currentClaudeConversation, reconcileEveryMs=10_000,
   // With the check off every version passes, so the version is never looked up: for a prerelease
   // tab that lookup throws, which would show a wakeable tab as not wakeable.
-  claudeVerified = session => versionCheckOff() || isVerifiedVersion(sessionClaudeVersion(session), { stateRoot: store.stateRoot }),
-  shownInTranscript = (session, ids) => shownInInbox(transcriptOf(session, { folders: [process.cwd(), store.projectRoot] }), ids) }) {
+  claudeVerified = session => versionCheckOff(versionEnv(env)) || isVerifiedVersion(sessionClaudeVersion(session), { stateRoot: store.stateRoot, env: versionEnv(env) }),
+  shownInTranscript = (session, ids) => shownInInbox(transcriptOf(session, { folders: [proc.cwd, store.projectRoot] }), ids) }) {
   const controller = createController({ store, adapters })
   const bindings = new Map()
   // Mail the inbox cap held back, per room and alias, until written() settles it.
@@ -42,7 +48,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
   // This server's own process identity, looked up when first needed: a ps that timed out while the
   // server started used to stop it for good. A later call asks again.
   let selfIdentity = null
-  const self = () => selfIdentity ??= processIdentity(process.pid) ?? null
+  const self = () => selfIdentity ??= processIdentity(proc.pid) ?? null
   const selfOrNull = () => { try { return self() } catch { return null } }
   const connectionId = randomUUID()
   const publicRows = rows => rows.map(({ sessionId, claim_id, ring_at, ...row }) => row)
@@ -136,7 +142,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
       // A failed /clear registers as a /clear, so the tab keeps its rooms (carryOverClear).
       const source = pendingRegistrationSource(store.stateRoot, nativeSession.id) ?? 'resume'
       const observation = observeLifecycle({ session_id: conversation, source, hook_event_name: 'SessionStart', cwd: store.projectRoot }, env,
-        { stateRoot: store.stateRoot, projectRoot: store.projectRoot, scope: () => store.projectRoot })
+        { stateRoot: store.stateRoot, projectRoot: store.projectRoot, scope: () => store.projectRoot, ppid: proc.ppid })
       if (!observation) return false
       const result = store.restoreClaude({ ...observation, session: validateSession(observation.session) }, isLive)
       for (const room of new Set((result?.restored ?? []).map(row => row.room))) scheduleRoom(room)
@@ -146,7 +152,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
   }
   const observeContext = (meta, { heal = false } = {}) => {
     const reuse = nativeSession?.runtime === 'claude' && meta?.['x-codex-turn-metadata'] === undefined
-    const session = reuse ? (({ conversationId, claudeVersion, ...rest }) => rest)(nativeSession) : inferSession(meta, env)
+    const session = reuse ? (({ conversationId, claudeVersion, ...rest }) => rest)(nativeSession) : inferSession(meta, env, { pid: proc.pid, ppid: proc.ppid })
     if (!session) {
       if (nativeSession?.runtime === 'codex') throw new Error('Native Codex metadata required on every call')
       return
@@ -510,7 +516,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
         if (error.code !== 'CHAT_STATE_DAMAGED' || name !== 'post') throw error
         const bound = identity(args.room, args.from, true)
         if (nativeSession) {
-          const current = inferSession(meta, env)
+          const current = inferSession(meta, env, { pid: proc.pid, ppid: proc.ppid })
           if (!current || current.id !== nativeSession.id || current.runtime !== nativeSession.runtime || current.profileHome !== nativeSession.profileHome) throw new Error('Native identity required for durable post during recovery')
         }
         const result = store.postCanonicalOnly({ ...args, sessionId: bound.sessionId })
@@ -619,7 +625,7 @@ export function createService({ store, adapters = createAdapters(), env = proces
             rows.push(...store.sentStatus({...bound,room:args.room}))
             const member=store.assertMember(args.room,bound.agent,bound.sessionId,bound.participantId)
             if(member.session.runtime==='claude') {
-              for(const flag of claudeFailureFlags(store.stateRoot)) rows.push({room:args.room,agent:args.agent,status:'verification_failed',version:flag.version,reason:flag.message})
+              for(const flag of claudeFailureFlags(store.stateRoot, Date.now(), versionEnv(env))) rows.push({room:args.room,agent:args.agent,status:'verification_failed',version:flag.version,reason:flag.message})
               // Without a lifecycle record this tab's rooms are not restored after a restart.
               // A check that could not run says nothing; only a definite absence is reported.
               let registered=env.AGENT_CHAT_VERIFY_CHILD==='1'||nativeSession?.runtime!=='claude'
@@ -688,18 +694,32 @@ export function logWithheld(stateRoot, tool, error) {
     fs.appendFileSync(file, line + '\n', { mode: 0o600 })
   } catch {}
 }
-function main() {
-  if (process.env.AGENT_CHAT_DIR || process.env.AGENT_CHAT_PROJECT) throw new Error('Candidate supports inferred projects only; explicit legacy overrides need migration review')
-  const root = process.env.AGENT_CHAT_ROOT || defaultChatRoot()
+// One tab's connection: its store and service, set up from the tab's environment and folder.
+// Errors here are start-up failures; startupErrorText says what the user can do about them.
+export async function openConnection({ env = process.env, proc = ownProcess(), scopeOf = projectRoot } = {}) {
+  if (env.AGENT_CHAT_DIR || env.AGENT_CHAT_PROJECT) throw new Error('Candidate supports inferred projects only; explicit legacy overrides need migration review')
+  const root = env.AGENT_CHAT_ROOT || defaultChatRoot()
   // A git that times out must not bind this tab to the wrong project for its whole life: retry
   // once, then fail visibly. A failure here leaves the tab with no agent-chat at all, and 3 s
   // lost that race while many tabs restored at once, so the bound is generous.
   let scope
-  try { scope = projectRoot(process.cwd(), { strict: true, timeoutMs: 10_000 }) } catch { scope = projectRoot(process.cwd(), { strict: true, timeoutMs: 10_000 }) }
-  const store = createStore({ root, projectRoot: scope, stateRoot: process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat') })
-  const service = createService({ store })
-  const send = (id, result, callback) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n', callback)
-  const lines = readline.createInterface({ input: process.stdin })
+  try { scope = await scopeOf(proc.cwd, { strict: true, timeoutMs: 10_000 }) } catch { scope = await scopeOf(proc.cwd, { strict: true, timeoutMs: 10_000 }) }
+  const store = createStore({ root, projectRoot: scope, stateRoot: env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat') })
+  const adapters = createAdapters({ stateRoot: store.stateRoot, verifiedClaudeVersion: (version, options) => isVerifiedVersion(version, { ...options, env: versionEnv(env) }) })
+  return { store, service: createService({ store, env, proc, adapters }) }
+}
+export const openDaemonConnection = options => openConnection({ ...options, scopeOf: projectRootAsync })
+export function startupErrorText(error, env = process.env) {
+  const legacy = ['AGENT_CHAT_PROJECT', 'AGENT_CHAT_DIR'].filter(name => env[name])
+  // An unsafe folder is named: it's the user's own path, and they can fix it.
+  const unsafe = error?.message === 'unsafe directory ownership or permissions' && typeof error.path === 'string'
+  return legacy.length ? `Agent-chat 2 has no ${legacy.join(' or ')}: rooms belong to one repository now. Remove it from this server's environment.`
+    : unsafe ? unsafeFolderLine(error.path)
+    : 'Agent-chat failed to start; operator configuration or storage review required.'
+}
+// Serves MCP lines for one connection: lines emits 'line' and 'close', write(text, callback) sends.
+export function serveConnection({ store, service, lines, write }) {
+  const send = (id, result, callback) => write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n', callback)
   lines.on('line', async line => {
     let request
     try { request = JSON.parse(line) } catch { return }
@@ -733,15 +753,13 @@ function main() {
   })
   lines.on('close', () => { try { service.close() } catch { /* No stack, native metadata or secret-bearing state reaches stderr. */ } })
 }
+async function main() {
+  const connection = await openConnection()
+  serveConnection({ ...connection, lines: readline.createInterface({ input: process.stdin }), write: (text, callback) => process.stdout.write(text, callback) })
+}
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { main() }
-  catch (error) {
-    const legacy = ['AGENT_CHAT_PROJECT', 'AGENT_CHAT_DIR'].filter(name => process.env[name])
-    // An unsafe folder is named: it's the user's own path, and they can fix it.
-    const unsafe = error?.message === 'unsafe directory ownership or permissions' && typeof error.path === 'string'
-    process.stderr.write(legacy.length ? `Agent-chat 2 has no ${legacy.join(' or ')}: rooms belong to one repository now. Remove it from this server's environment.\n`
-      : unsafe ? unsafeFolderLine(error.path) + '\n'
-      : 'Agent-chat failed to start; operator configuration or storage review required.\n')
-    process.exitCode=1
-  }
+  main().catch(error => {
+    process.stderr.write(startupErrorText(error) + '\n')
+    process.exitCode = 1
+  })
 }
