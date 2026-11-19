@@ -91,6 +91,7 @@ jobs:
   agent-chat-windows:
     runs-on: windows-latest
     continue-on-error: true
+    timeout-minutes: 25
     defaults:
       run:
         shell: bash
@@ -105,4 +106,4 @@ jobs:
       - name: Test agent-chat
         if: ${{ !cancelled() }}
         working-directory: plugins/agent-chat
-        run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --import ./server/test-setup.mjs --test --test-concurrency=2 server/*.test.mjs
+        run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --import ./server/test-setup.mjs --test --test-concurrency=2 --test-timeout=120000 server/*.test.mjs
