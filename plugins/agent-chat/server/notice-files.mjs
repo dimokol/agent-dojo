@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { hasModeBits, ownedByMe } from './platform.mjs'
+import { hasModeBits, ownedByMe } from './file-modes.mjs'
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export const NAME = /^[A-Za-z0-9._-]{1,64}$/

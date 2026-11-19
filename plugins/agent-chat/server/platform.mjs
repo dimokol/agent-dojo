@@ -1,22 +1,16 @@
 // What differs between macOS/Linux and Windows, in one place.
 //
-// File checks: on Windows, Node reports uid 0 and made-up mode bits for every file, so the owner
-// and mode parts of a check pass there and privacy comes from the folder's ACL instead. A private
-// root folder is checked (or, when agent-chat just made it, locked) once per process with
-// agent-chat-win.exe, and everything agent-chat creates under it inherits that ACL.
+// File checks (file-modes.mjs): on Windows, Node reports uid 0 and made-up mode bits for every
+// file, so the owner and mode parts of a check pass there and privacy comes from the folder's ACL.
+// A private root folder is checked (or, when agent-chat just made it, locked) once per process
+// with agent-chat-win.exe, and everything agent-chat creates under it inherits that ACL.
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-export const WINDOWS = process.platform === 'win32'
-const UID = WINDOWS ? -1 : process.getuid()
-
-export const ownedByMe = stat => WINDOWS || stat.uid === UID
-// For ancestors of a path, where root-owned system folders (/, /Users) are fine.
-export const ownedByMeOrRoot = stat => WINDOWS || stat.uid === UID || stat.uid === 0
-export const hasModeBits = (stat, mask) => !WINDOWS && (stat.mode & mask) !== 0
-export const modeIs = (stat, mode) => WINDOWS || (stat.mode & 0o777) === mode
+export { WINDOWS, ownedByMe, ownedByMeOrRoot, hasModeBits, modeIs } from './file-modes.mjs'
+import { WINDOWS } from './file-modes.mjs'
 
 // A new entry survives a crash only once its folder is flushed. Windows can't open a folder for
 // fsync (EPERM) and NTFS journals the entry itself.

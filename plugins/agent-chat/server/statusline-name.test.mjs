@@ -88,10 +88,10 @@ test('a stalled stdin ends silently within the deadline', async t => {
 })
 
 test('the widget and its helpers load only builtins: no store lock, network or child process', () => {
-  for (const file of ['statusline-name.mjs', 'notice-files.mjs']) {
+  for (const file of ['statusline-name.mjs', 'notice-files.mjs', 'file-modes.mjs']) {
     const source = fs.readFileSync(new URL('./' + file, import.meta.url), 'utf8')
     const imports = [...source.matchAll(/^import .* from '([^']+)'/gm)].map(match => match[1])
-    assert.ok(imports.every(name => ['node:fs', 'node:os', 'node:path', 'node:crypto', 'node:url', './notice-files.mjs'].includes(name)), `${file}: ${imports}`)
+    assert.ok(imports.every(name => ['node:fs', 'node:os', 'node:path', 'node:crypto', 'node:url', './notice-files.mjs', './file-modes.mjs'].includes(name)), `${file}: ${imports}`)
     assert.doesNotMatch(source, /child_process|node:net|node:http|sqlite|import\(/)
   }
 })

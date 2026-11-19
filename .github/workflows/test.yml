@@ -103,5 +103,6 @@ jobs:
         working-directory: plugins/agent-chat/server
         run: sha256sum -c agent-chat-win.sha256
       - name: Test agent-chat
+        if: ${{ !cancelled() }}
         working-directory: plugins/agent-chat
         run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --test --test-concurrency=2 server/*.test.mjs
