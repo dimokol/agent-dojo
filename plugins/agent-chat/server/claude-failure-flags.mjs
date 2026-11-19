@@ -4,18 +4,19 @@ import { createHash } from 'node:crypto'
 import { safeFile } from './store-files.mjs'
 import { isVerifiedVersion } from './claude-versions.mjs'
 import { UUID, readShown, recordShown } from './notice-files.mjs'
-export function claudeFailureFlags(stateRoot, now=Date.now()) {
+// env: the tab's own environment (the shared daemon serves many tabs); process.env when omitted.
+export function claudeFailureFlags(stateRoot, now=Date.now(), env=process.env) {
   const directory=path.join(stateRoot,'verification')
   try {
     // Validate the allowlist even when no version attempt could be recorded.
-    isVerifiedVersion('2.1.296',{stateRoot})
+    isVerifiedVersion('2.1.296',{stateRoot,env})
     const stat=fs.lstatSync(directory)
     if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||stat.mode&0o077) throw Error('Unsafe verification flags')
     return fs.readdirSync(directory).filter(name=>/^\d+\.\d+\.\d+\.json$/.test(name)).slice(0,128).flatMap(name=>{
       const file=path.join(directory,name);safeFile(file)
       const record=JSON.parse(fs.readFileSync(file,'utf8')), version=name.slice(0,-5)
       if(record.version!==version)throw Error('Invalid verification flag')
-      if(isVerifiedVersion(version,{stateRoot}))return []
+      if(isVerifiedVersion(version,{stateRoot,env}))return []
       if(record.status!=='failed'&&!(record.status==='running'&&record.deadlineAt<now))return []
       const log=path.join(directory,version+'.log')
       return [{version,flagPath:file,logPath:log,message:`Claude ${version} automatic verification failed or stopped. Review ${file} and ${log}; no automatic retry will run.`}]

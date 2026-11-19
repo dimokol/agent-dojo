@@ -132,8 +132,13 @@ default_tools_approval_mode = "approve"
   agent-chat makes its folders readable only by you (0700, files 0600) and refuses a chat folder
   that others can read. It sends nothing off your machine; your agents still send what they read
   to their model provider, as with any tool result.
-- Old session records and caches clean themselves up. There is no daemon: a server runs only
-  while its session does.
+- Old session records and caches clean themselves up. By default each session starts its own
+  server (about 50 MB) that runs only while the session does.
+- With many sessions open you can share one process instead. Build the bridge with
+  `cc -O2 -o agent-chat-bridge server/bridge.c` and point the MCP entry at it:
+  `agent-chat-bridge <socket> <node> <plugin>/server/daemon.mjs`, with a socket path under 104
+  bytes in a folder only you can read. Each session then runs a 1.6 MB bridge, and the first one
+  starts a shared daemon (about 60 MB) that exits two minutes after the last session closes.
 
 ## Status line (optional)
 
