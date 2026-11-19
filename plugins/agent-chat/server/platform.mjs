@@ -1,0 +1,65 @@
+// What differs between macOS/Linux and Windows, in one place.
+//
+// File checks: on Windows, Node reports uid 0 and made-up mode bits for every file, so the owner
+// and mode parts of a check pass there and privacy comes from the folder's ACL instead. A private
+// root folder is checked (or, when agent-chat just made it, locked) once per process with
+// agent-chat-win.exe, and everything agent-chat creates under it inherits that ACL.
+import fs from 'node:fs'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+export const WINDOWS = process.platform === 'win32'
+const UID = WINDOWS ? -1 : process.getuid()
+
+export const ownedByMe = stat => WINDOWS || stat.uid === UID
+// For ancestors of a path, where root-owned system folders (/, /Users) are fine.
+export const ownedByMeOrRoot = stat => WINDOWS || stat.uid === UID || stat.uid === 0
+export const hasModeBits = (stat, mask) => !WINDOWS && (stat.mode & mask) !== 0
+export const modeIs = (stat, mode) => WINDOWS || (stat.mode & 0o777) === mode
+
+// A new entry survives a crash only once its folder is flushed. Windows can't open a folder for
+// fsync (EPERM) and NTFS journals the entry itself.
+export function fsyncDir(dir) {
+  if (WINDOWS) return
+  const fd = fs.openSync(dir, 'r')
+  try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+}
+
+export const WIN_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'agent-chat-win.exe')
+
+// Folders whose ACL passed in this process; anything below them inherits it.
+const privateRoots = new Set()
+const under = (dir, root) => dir === root || dir.startsWith(root.endsWith(path.sep) ? root : root + path.sep)
+
+// Windows only: is dir private to this user (its ACL names only this user, SYSTEM and
+// Administrators)? created: agent-chat just made it, so lock it first. Throws when the helper
+// can't run, so a missing exe never reads as "private".
+export function windowsFolderPrivate(dir, { created = false, helper = WIN_HELPER, run = execFileSync } = {}) {
+  if (!WINDOWS && helper === WIN_HELPER) return true
+  const resolved = path.resolve(dir)
+  for (const root of privateRoots) if (under(resolved, root)) return true
+  const output = run(helper, [created ? 'acl-lock' : 'acl-check', resolved], { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  if (output !== 'private') return false
+  privateRoots.add(resolved)
+  return true
+}
+
+// For tests: forget which roots passed.
+export function resetPrivateRoots() { privateRoots.clear() }
+
+// Windows process rows from agent-chat-win.exe: { pid, ppid, start, mine, image, name } per live
+// PID asked for, or every process with all. Throws when the helper fails, so a check that could
+// not run never reads as "no such process".
+export function windowsProcessRows(pids, { all = false, timeoutMs = 2000, helper = WIN_HELPER, run = execFileSync } = {}) {
+  const args = all ? ['ps', '--all'] : ['ps', ...pids.map(String)]
+  if (!all && !pids.length) return new Map()
+  const output = run(helper, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  const rows = new Map()
+  for (const line of String(output).split('\n')) {
+    if (!line.trim()) continue
+    const row = JSON.parse(line)
+    if (Number.isSafeInteger(row.pid)) rows.set(row.pid, row)
+  }
+  return rows
+}

@@ -14,6 +14,7 @@ import { participantId, initializeParticipants, nameOwner, registerParticipant, 
 import { postPolicy, isBroadcast, wakes, readState } from './message-policy.mjs'
 import { migrateReadIndex, compactReadIndex, recipientStates, directTarget } from './read-index.mjs'
 import { isDismissed, dismissMail } from './dismissals.mjs'
+import { hasModeBits } from './platform.mjs'
 
 // A doorbell nobody answered (a lost frame, a tab that closed mid-turn) must
 // not silence later mail for good. After this long it stops gating, and the
@@ -35,7 +36,7 @@ function validatePost({ room, from, to = 'all', channel = 'main', message, reply
 export function createStore({ root: givenRoot, projectRoot, stateRoot = path.join(givenRoot, '.runtime'), now = Date.now }) {
   const root = canonicalRoot(givenRoot)
   ensureDirectory(stateRoot)
-  if (fs.statSync(stateRoot).mode & 0o077) throw new Error('operational state directory must be private')
+  if (hasModeBits(fs.statSync(stateRoot), 0o077)) throw new Error('operational state directory must be private')
   migrateProjectState(givenRoot, projectRoot, stateRoot)
   const privateDir = path.join(stateRoot, 'projects', projectStateKey(givenRoot, projectRoot))
   let derivedFailureReported = false
@@ -49,7 +50,7 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     ;({ project, dir } = projectDirectory(path.resolve(root), projectRoot, path.join(stateRoot, 'locks')))
     roomsDir = path.join(dir, 'rooms')
     ensureDirectory(roomsDir); ensureDirectory(privateDir)
-    if (fs.statSync(privateDir).mode & 0o077) throw new Error('delivery directory must be private')
+    if (hasModeBits(fs.statSync(privateDir), 0o077)) throw new Error('delivery directory must be private')
     materialized = true
   }
   // Another session's store may have created this project since, or another project may have

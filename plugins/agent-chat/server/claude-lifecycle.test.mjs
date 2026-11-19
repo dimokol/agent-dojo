@@ -114,11 +114,11 @@ test('bounded ancestor inspection refuses impossible PID and Node executable', (
 
 test('nested directories and linked worktrees resolve to the same canonical common-root scope', t => {
   const f = fixture(t)
-  execFileSync('/usr/bin/git', ['init', '-q', f.project])
-  execFileSync('/usr/bin/git', ['-C', f.project, '-c', 'user.name=Lifecycle Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture'])
+  execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', ['init', '-q', f.project])
+  execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', ['-C', f.project, '-c', 'user.name=Lifecycle Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture'])
   const nested = path.join(f.project, 'nested'); fs.mkdirSync(nested)
   const worktree = path.join(f.root, 'worktree')
-  execFileSync('/usr/bin/git', ['-C', f.project, 'worktree', 'add', '--detach', '-q', worktree])
+  execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', ['-C', f.project, 'worktree', 'add', '--detach', '-q', worktree])
   assert.equal(lifecycleProjectRoot(nested), f.project)
   assert.equal(lifecycleProjectRoot(worktree), f.project)
   const first = observeClaudeLifecycle({ ...f.input, cwd: nested }, f.env, {...f.options,scope:lifecycleProjectRoot})

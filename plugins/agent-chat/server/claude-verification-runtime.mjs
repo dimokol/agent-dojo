@@ -3,6 +3,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn, execFileSync } from 'node:child_process'
 import { processIdentity, isProcessLive } from './native-session.mjs'
+import { hasModeBits, ownedByMe } from './platform.mjs'
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const requireProof = (value, code) => { if (!value) throw new Error(code) }
 export function spawnVerificationPty(args, { cwd, env }) {
@@ -123,7 +124,7 @@ export function resumedTranscriptProof({ cwd, configHome = path.join(os.homedir(
   let buffer
   try {
     const stat = fs.lstatSync(file)
-    if (!stat.isFile() || stat.uid !== process.getuid() || stat.nlink !== 1 || (stat.mode & 0o022)) throw new Error('UNSAFE_OWNED_TRANSCRIPT')
+    if (!stat.isFile() || !ownedByMe(stat) || stat.nlink !== 1 || hasModeBits(stat, 0o022)) throw new Error('UNSAFE_OWNED_TRANSCRIPT')
     buffer = fs.readFileSync(file)
   } catch (error) { if (error.code === 'ENOENT') return { matched: false, bytes: 0 }; throw error }
   const rows = buffer.subarray(afterBytes).toString('utf8').split('\n').filter(Boolean).map(line => { try { return JSON.parse(line) } catch { return null } })

@@ -24,7 +24,7 @@ function temp(t, tag) {
   return dir
 }
 async function sleeper(t) {
-  const child = spawn('sleep', ['60'], { stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })
   t.after(() => child.kill())
   for (let i = 0; i < 50 && !processIdentity(child.pid); i++) await new Promise(resolve => setTimeout(resolve, 20))
   return processIdentity(child.pid)

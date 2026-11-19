@@ -27,7 +27,7 @@ function temp(t, tag) {
   return dir
 }
 async function sleeper(t) {
-  const child = spawn('sleep', ['60'], { stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })
   t.after(() => child.kill())
   for (let i = 0; i < 50 && !processIdentity(child.pid); i++) await new Promise(resolve => setTimeout(resolve, 20))
   return processIdentity(child.pid)
@@ -71,9 +71,9 @@ test('M6: a delivery cancelled at the deadline before it sent anything stays pen
   assert.notEqual(store.deliveryStatus({ room: 'room', agent: 'C' })[0].status, 'notified')
 })
 
-test('M9: a git that times out once does not bind a linked worktree to the wrong project', async t => {
+test('M9: a git that times out once does not bind a linked worktree to the wrong project', { skip: process.platform === 'win32' && 'the slow git stand-in is a shell script' }, async t => {
   const dir = temp(t, 'm9'), main = path.join(dir, 'main'), worktree = path.join(dir, 'wt'), bin = path.join(dir, 'bin')
-  const git = (...args) => execFileSync('/usr/bin/git', args, { stdio: 'ignore' })
+  const git = (...args) => execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', args, { stdio: 'ignore' })
   fs.mkdirSync(main); git('-C', main, 'init', '-q'); git('-C', main, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init')
   git('-C', main, 'worktree', 'add', '-q', worktree)
   fs.mkdirSync(bin); fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nif [ ! -e "$SLOW_MARK" ]; then : > "$SLOW_MARK"; sleep 4; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })

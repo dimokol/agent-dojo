@@ -10,6 +10,7 @@ import { ringClaude, wakeMode, defaultWakeDir } from './wake-ring.mjs'
 import { projectRoot } from './project-scope.mjs'
 import { isVerifiedVersion } from './claude-versions.mjs'
 import { resolveClaudeConversation, claudeLifecycleAncestors, claudeProcessListing, listingLookup, claudeExecutable, CALL_BOUNDS } from './claude-lifecycle.mjs'
+import { hasModeBits } from './platform.mjs'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NAME = /^[A-Za-z0-9._-]{1,128}$/
@@ -48,7 +49,7 @@ function safePath(value, kind) {
         throw new TypeError(`Wrong ${kind} file type`)
       }
     } else if (!stat.isDirectory()) throw new TypeError(`Invalid ${kind} parent`)
-    if (stat.mode & 0o022 && !(stat.isDirectory() && stat.mode & 0o1000)) {
+    if (hasModeBits(stat, 0o022) && !(stat.isDirectory() && hasModeBits(stat, 0o1000))) {
       throw new TypeError(`Writable ${kind} path refused`)
     }
   }

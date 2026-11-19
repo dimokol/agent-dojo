@@ -1,9 +1,10 @@
-// Wake files shared by the asyncRewake hook (wake.sh on macOS, wake-hook.mjs on Windows)
+// Wake files shared by the asyncRewake hook (wake.sh on macOS, agent-chat-win.exe wake on Windows)
 // and the server that delivers mail.
 //
 // One folder, keyed by the Claude CLI's PID (CLAUDE_PID, stable for the CLI's lifetime even
 // across /clear and /resume):
-//   armed-<pid>.json         the session's current waiter: { waiter, event, at }. Newest wins.
+//   armed-<pid>.json         the session's current waiter: { waiter, event, at }, plus on Windows
+//                            pipe, the waiter's \\.\pipe\agent-chat-wake-<pid>-<waiter>. Newest wins.
 //   ring-<pid>               mail waiting to wake the session. Line 1 is the wake text, line 2 the
 //                            JSON { rooms: { <room>: [<message id>...] } }, so the shell waiter
 //                            only has to read one line.
@@ -16,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { WINDOWS, windowsFolderPrivate } from './platform.mjs'
 
 // No PostToolUse arming: the waiter armed at Stop stays through the next turn, so an extra waiter
 // per inbox read only cost a process start and a handover.
@@ -24,7 +26,8 @@ export const WAKE_EVENTS = ['SessionStart', 'Stop', 'StopFailure']
 export const WAKE_TIMEOUT_S = 20 * 86400
 
 // AGENT_CHAT_WAKE=hook switches Claude delivery from the CLI's private socket to the hook.
-export const wakeMode = (env = process.env) => env.AGENT_CHAT_WAKE === 'hook' ? 'hook' : 'socket'
+// Windows always uses the hook: Claude's messaging pipe there is not one agent-chat speaks.
+export const wakeMode = (env = process.env) => WINDOWS || env.AGENT_CHAT_WAKE === 'hook' ? 'hook' : 'socket'
 
 export function defaultWakeDir(env = process.env) {
   if (env.AGENT_CHAT_WAKE_DIR) return env.AGENT_CHAT_WAKE_DIR
@@ -32,9 +35,11 @@ export function defaultWakeDir(env = process.env) {
 }
 
 export function ensureWakeDir(dir) {
+  const created = !fs.existsSync(dir)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  // Windows has no POSIX modes; the folder inherits the user profile's ACL there.
-  if (process.platform !== 'win32') fs.chmodSync(dir, 0o700)
+  // Windows has no POSIX modes; the folder's ACL keeps it private there.
+  if (!WINDOWS) fs.chmodSync(dir, 0o700)
+  else if (!windowsFolderPrivate(dir, { created })) throw new Error(`unsafe wake folder ${dir}`)
 }
 
 export const armedFile = (dir, pid) => path.join(dir, `armed-${pid}.json`)
@@ -74,7 +79,7 @@ function writeRing(file, ring) {
 export function wakeState({ dir = defaultWakeDir(), claudePid }) {
   const mark = readJson(armedFile(dir, claudePid))
   if (!mark || !isAlive(mark.waiter) || !isAlive(claudePid)) return { armed: false }
-  return { armed: true, waiter: mark.waiter, event: mark.event, since: mark.at }
+  return { armed: true, waiter: mark.waiter, event: mark.event, since: mark.at, ...(typeof mark.pipe === 'string' ? { pipe: mark.pipe } : {}) }
 }
 
 // Tell a macOS waiter to look now. Non-blocking: no reader means nobody is waiting on that pipe.
@@ -85,6 +90,15 @@ function poke(dir, claudePid, waiter) {
     fs.writeSync(fd, '\n')
     return true
   } catch { return false }
+  finally { if (fd !== undefined) try { fs.closeSync(fd) } catch {} }
+}
+
+// Only the pipe name this Claude and waiter would have, so a mark can't point a ring elsewhere.
+function pokeWindows(pipe, claudePid, waiter) {
+  if (pipe !== `\\\\.\\pipe\\agent-chat-wake-${claudePid}-${waiter}`) return false
+  let fd
+  try { fd = fs.openSync(pipe, 'w'); fs.writeSync(fd, '\n'); return true }
+  catch { return false }
   finally { if (fd !== undefined) try { fs.closeSync(fd) } catch {} }
 }
 
@@ -103,7 +117,9 @@ export function ringClaude({ dir = defaultWakeDir(), claudePid, room, messageIds
   writeRing(file, ring)
   const state = wakeState({ dir, claudePid })
   if (!state.armed) return { armed: false }
-  // The Node waiter (Windows) has no pipe and sees the ring through its folder watch.
+  // The Windows waiter (agent-chat-win.exe wake) serves a named pipe; a byte on it means "look now".
+  if (WINDOWS && state.pipe) return { armed: pokeWindows(state.pipe, claudePid, state.waiter) }
+  // The Node waiter (Windows, no exe) has no pipe and sees the ring through its folder watch.
   if (!fs.existsSync(pipeFile(dir, claudePid, state.waiter))) return { armed: true }
   return { armed: poke(dir, claudePid, state.waiter) }
 }

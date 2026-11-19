@@ -4,6 +4,7 @@ import path from 'node:path'
 import { atomicJson, locked } from './store-files.mjs'
 import { trustedClaudeCommand, runningClaudeVersion, processExecutable } from './native-session.mjs'
 import { distribution } from './distribution.mjs'
+import { modeIs, ownedByMe } from './platform.mjs'
 
 const DEFAULT_VERSION = '2.1.296'
 const STATE_ROOT = process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local/state/agent-chat')
@@ -17,7 +18,7 @@ function privateRoot(stateRoot, create = false) {
   try {
     if (create && !fs.existsSync(stateRoot)) fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
     const stat = fs.lstatSync(stateRoot)
-    if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) throw unavailable()
+    if (!stat.isDirectory() || !ownedByMe(stat) || !modeIs(stat, 0o700)) throw unavailable()
     return true
   } catch (error) {
     if (!create && error.code === 'ENOENT') return false
@@ -29,7 +30,7 @@ function readRecords(stateRoot) {
   const file = path.join(stateRoot, 'claude-versions.json')
   try {
     const stat = fs.lstatSync(file)
-    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600) throw unavailable()
+    if (!stat.isFile() || stat.nlink !== 1 || !ownedByMe(stat) || !modeIs(stat, 0o600)) throw unavailable()
     const value = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (!object(value) || value.schema !== 1 || !object(value.versions)) throw unavailable()
     for (const [version, record] of Object.entries(value.versions)) {
