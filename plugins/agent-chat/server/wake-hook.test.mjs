@@ -194,8 +194,10 @@ test('hook settings: async rewake on SessionStart, Stop and StopFailure', () => 
   }
 })
 
-test("the plugin's hooks.json arms the wake waiter on the same events, async with rewake", () => {
-  const hooks = JSON.parse(fs.readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8')).hooks
+// Plugin layout only: an installed release has no hooks.json, its installer writes the entries.
+const HOOKS_JSON = new URL('../hooks/hooks.json', import.meta.url)
+test("the plugin's hooks.json arms the wake waiter on the same events, async with rewake", { skip: !fs.existsSync(HOOKS_JSON) && 'no hooks.json next to this release' }, () => {
+  const hooks = JSON.parse(fs.readFileSync(HOOKS_JSON, 'utf8')).hooks
   for (const ev of WAKE_EVENTS) {
     const entry = hooks[ev].flatMap(group => group.hooks).find(h => /wake\.sh/.test(h.command))
     assert.ok(entry, ev)

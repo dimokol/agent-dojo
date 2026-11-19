@@ -6,6 +6,7 @@ import path from 'node:path'
 import net from 'node:net'
 import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { fileURLToPath } from 'node:url'
 import { createAdapters, validateSession, runProcess } from './adapters.mjs'
 // These tests cover the version gate, which the plugin ships switched off; turn it on here so a
 // plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
@@ -333,7 +334,7 @@ test('hook mode end to end on macOS: the adapter wakes a real sh waiter through 
   const { spawn } = await import('node:child_process')
   const claude = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' })
   t.after(() => { claude.kill(); fs.rmSync(dir, { recursive: true, force: true }) })
-  const hook = spawn('/bin/sh', [new URL('./wake.sh', import.meta.url).pathname], {
+  const hook = spawn('/bin/sh', [fileURLToPath(new URL('./wake.sh', import.meta.url))], {
     env: { ...process.env, AGENT_CHAT_WAKE: 'hook', AGENT_CHAT_WAKE_DIR: dir, CLAUDE_PID: String(claude.pid), CLAUDE_CODE_ENTRYPOINT: 'cli' }, stdio: ['ignore', 'ignore', 'pipe'] })
   let stderr = ''; hook.stderr.on('data', d => { stderr += d })
   const exited = new Promise(resolve => hook.on('exit', resolve))
