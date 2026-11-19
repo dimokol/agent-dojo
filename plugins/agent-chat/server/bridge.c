@@ -27,7 +27,7 @@
 
 static const char *HELLO_ENV[] = {"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CONFIG_DIR", "CODEX_HOME",
   "AGENT_CHAT_CODEX_HOME", "AGENT_CHAT_VERIFY_CHILD", "AGENT_CHAT_ROOT", "AGENT_CHAT_STATE_ROOT", "AGENT_CHAT_VERSION_CHECK",
-  "AGENT_CHAT_DIR", "AGENT_CHAT_PROJECT", NULL};
+  "AGENT_CHAT_DIR", "AGENT_CHAT_PROJECT", "AGENT_CHAT_WAKE", "AGENT_CHAT_WAKE_DIR", NULL};
 // The daemon starts with only these: the tab's own session keys never reach it, and neither does
 // AGENT_CHAT_VERSION_CHECK, which each tab's hello carries for itself.
 static const char *DAEMON_ENV[] = {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "SHELL",

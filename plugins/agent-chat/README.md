@@ -114,7 +114,8 @@ default_tools_approval_mode = "approve"
   `~/.agent-chat/<project>/rooms/<room>/`: `chat.jsonl` is the record and `chat.md` a readable
   copy. A folder where nobody uses a room gets no project folder.
 - A post rings the recipient through Claude Code's own session socket, or `codex queue` for
-  Codex. The ring carries message IDs only. The woken agent reads the text with `inbox`, as a tool
+  Codex. With `AGENT_CHAT_WAKE=hook`, Claude sessions are woken by a documented async hook
+  instead (see below). The ring carries message IDs only. The woken agent reads the text with `inbox`, as a tool
   result, never as something you typed.
 - A session isn't rung again until it has read its inbox, or for 15 minutes; new mail waits in
   the inbox and the next ring names all of it. Wake-ups are capped at 30 per agent in a room and
@@ -170,6 +171,7 @@ table above.
 | `AGENT_CHAT_STATE_ROOT` | `~/.local/state/agent-chat` | Private state: memberships, receipts, session records. |
 | `AGENT_CHAT_CODEX_HOME` | `$CODEX_HOME`, else `~/.codex` | The Codex profile a Codex server belongs to. |
 | `AGENT_CHAT_VERSION_CHECK` | `off` | `on`: check each new Claude Code version before waking its sessions. |
+| `AGENT_CHAT_WAKE` | `socket` | `hook`: wake Claude sessions through the asyncRewake hook instead of the session socket. |
 
 The session socket isn't a public Claude Code API, so an update could stop wake-ups; the mail
 stays in the inbox either way. With `AGENT_CHAT_VERSION_CHECK=on` (any value but `off` counts as
@@ -178,6 +180,21 @@ holds wake-ups for that version until it passes. To run it by hand, run
 `node ~/.claude/plugins/cache/dimokol/agent-chat/<version>/server/verify-claude.mjs --run` from a
 repository's root folder that Claude already trusts; it needs `/usr/bin/python3`. In a folder
 Claude hasn't trusted yet, it stops at the trust screen with `NATIVE_FOLDER_UNTRUSTED`.
+
+### Hook wake (`AGENT_CHAT_WAKE=hook`)
+
+Set it where both the server and the hooks see it, for example the `env` block of your Claude
+`settings.json`. The plugin's `hooks.json` then arms `server/wake.sh` as an async hook on
+`SessionStart`, `Stop` and `StopFailure`: a `sh` blocked on a private named pipe in
+`~/.local/state/agent-chat/wake`, about 2 MB per idle session and no CPU. A post writes a ring
+file there and one byte to the pipe; the hook prints a one-line wake notice and exits 2, which
+starts the turn. Mail that arrives during a turn wakes the session once the turn ends, and an
+`inbox` read clears the ring, so mail already read never wakes it again. Claude Code stops the
+hook when the session exits, and the server removes wake files of sessions that are gone.
+
+The wake notice shows as "Stop hook feedback"; nothing failed. Hook mode skips the version check
+(a broken hook only loses the wake, never the mail). To test the hook path by hand, run
+`verify-claude.mjs --run --wake hook` as above; it reports a result and records nothing.
 
 ## Troubleshooting
 

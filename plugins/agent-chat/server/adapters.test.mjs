@@ -297,3 +297,50 @@ test('the receiving tab\'s own version decides wake-ups, not the newly installed
   assert.throws(() => validateSession({ id: ID, runtime: 'codex', claudeVersion: '2.1.302' }), TypeError)
   assert.throws(() => validateSession({ id: ID, runtime: 'claude', claudeVersion: '2.1.302; rm' }), TypeError)
 })
+
+test('hook mode: a Claude ring goes to the wake folder, never the socket or the version gate, and says rung or queued', async t => {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-wake-'))
+  const { spawn } = await import('node:child_process')
+  const claude = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' })
+  const waiter = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' })
+  t.after(() => { claude.kill(); waiter.kill(); fs.rmSync(dir, { recursive: true, force: true }) })
+  let cliCalls = 0
+  const adapter = createAdapters({ requireProcessIdentity: false, wake: 'hook', wakeDir: dir,
+    verifiedClaudeVersion: () => false, executor: async () => { cliCalls++; return { code: 0, stdout: '2.1.999 (Claude Code)\n' } },
+    connect: () => { throw Error('hook mode must not use the socket') } })
+  const session = { id: ID, runtime: 'claude', clientPid: claude.pid, clientStart: 'x', claudeVersion: '2.1.302' }
+  const queued = await adapter.deliver(input('claude', { session }))
+  assert.equal(queued.status, 'accepted')
+  assert.match(queued.detail, /wakes for this mail when its turn ends/)
+  assert.match(fs.readFileSync(path.join(dir, `ring-${claude.pid}`), 'utf8'), /^Agent Chat delivery, not an error: 1 new message in product-review\./)
+  fs.writeFileSync(path.join(dir, `armed-${claude.pid}.json`), JSON.stringify({ waiter: waiter.pid, event: 'Stop', at: Date.now() }))
+  const rung = await adapter.deliver(input('claude', { session, messages: [{ ...message, message_id: 'm-2' }] }))
+  assert.equal(rung.status, 'rung')
+  assert.match(fs.readFileSync(path.join(dir, `ring-${claude.pid}`), 'utf8'), /2 new messages in product-review/)
+  // No version gate and no CLI subprocess in hook mode, even for an unverified or unknown version.
+  const { claudeVersion, ...unknown } = session
+  assert.equal((await adapter.deliver(input('claude', { session: unknown, messages: [{ ...message, message_id: 'm-3' }] }))).status, 'rung')
+  assert.equal(cliCalls, 0)
+  // A session without a Claude PID keeps its mail.
+  const { clientPid, clientStart, ...noPid } = session
+  const held = await adapter.deliver(input('claude', { session: noPid }))
+  assert.equal(held.attempted, false)
+  assert.equal(held.status, 'pending')
+})
+
+test('hook mode end to end on macOS: the adapter wakes a real sh waiter through its pipe', { skip: process.platform === 'win32' }, async t => {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-wake-'))
+  const { spawn } = await import('node:child_process')
+  const claude = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' })
+  t.after(() => { claude.kill(); fs.rmSync(dir, { recursive: true, force: true }) })
+  const hook = spawn('/bin/sh', [new URL('./wake.sh', import.meta.url).pathname], {
+    env: { ...process.env, AGENT_CHAT_WAKE: 'hook', AGENT_CHAT_WAKE_DIR: dir, CLAUDE_PID: String(claude.pid), CLAUDE_CODE_ENTRYPOINT: 'cli' }, stdio: ['ignore', 'ignore', 'pipe'] })
+  let stderr = ''; hook.stderr.on('data', d => { stderr += d })
+  const exited = new Promise(resolve => hook.on('exit', resolve))
+  for (let i = 0; i < 100 && !fs.existsSync(path.join(dir, `armed-${claude.pid}.json`)); i++) await new Promise(r => setTimeout(r, 20))
+  const adapter = createAdapters({ requireProcessIdentity: false, wake: 'hook', wakeDir: dir, verifiedClaudeVersion: () => true })
+  const result = await adapter.deliver(input('claude', { session: { id: ID, runtime: 'claude', clientPid: claude.pid, clientStart: 'x', claudeVersion: '2.1.302' } }))
+  assert.equal(result.status, 'rung')
+  assert.equal(await exited, 2)
+  assert.match(stderr, /1 new message in product-review/)
+})
