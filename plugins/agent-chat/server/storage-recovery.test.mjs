@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createStore } from './store.mjs'
+import { linkFolder } from './test-platform.mjs'
 const session = id => ({ id, runtime: 'test', endpoint: 'test-only' })
 function fixture(t, extra = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-'))
@@ -16,6 +17,7 @@ function fixture(t, extra = {}) {
   store.join({ room: 'r', agent: 'alice', session: session('a') }); store.join({ room: 'r', agent: 'bob', session: session('b') })
   return { temp, options, store }
 }
+// On Windows the rollback goes through a second handle: ftruncate on the O_APPEND one fails with EPERM.
 test('M2: a write that fails partway leaves the log readable', t => {
   const { store } = fixture(t), real = fs.writeFileSync
   t.after(() => { fs.writeFileSync = real })
@@ -37,7 +39,7 @@ test('M3: a torn log in one room does not block joins elsewhere', t => {
 test('L7: a symlinked parent of the root keys the same state', t => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-'))
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }))
-  fs.mkdirSync(path.join(temp, 'real')); fs.symlinkSync(path.join(temp, 'real'), path.join(temp, 'link')); fs.mkdirSync(path.join(temp, 'repo'))
+  fs.mkdirSync(path.join(temp, 'real')); linkFolder(path.join(temp, 'real'), path.join(temp, 'link')); fs.mkdirSync(path.join(temp, 'repo'))
   // Both spellings open the same fresh project before either writes, as two tabs do; either order.
   const stateRoot = path.join(temp, 'state')
   for (const [first, second] of [['real', 'link'], ['link', 'real']]) {

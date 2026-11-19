@@ -7,6 +7,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
+import { linkFolder, posixModesOnly, WIN } from './test-platform.mjs'
 
 // The messages a user sees while setting agent-chat up, seen live on PR #6.
 const SERVER = fileURLToPath(new URL('./server.mjs', import.meta.url))
@@ -65,7 +66,7 @@ test('Codex with a profile folder the server cannot use is told about AGENT_CHAT
   assert.match(result.result.content[0].text, /^Native Codex session not recognised; .*AGENT_CHAT_CODEX_HOME in the mcp_servers\.agent_chat\.env table of config\.toml$/)
 })
 
-test('a chat folder other users can read is named, at start or at the first call', async t => {
+test('a chat folder other users can read is named, at start or at the first call', posixModesOnly, async t => {
   const { dir, projectRoot } = folder(t)
   const root = path.join(dir, 'chats'); fs.mkdirSync(root, { mode: 0o755 }); fs.chmodSync(root, 0o755)
   const env = { AGENT_CHAT_ROOT: root, AGENT_CHAT_STATE_ROOT: path.join(dir, 'state') }
@@ -88,11 +89,16 @@ test('Claude says at start that the chat folder is unsafe, and stays quiet when 
   const start = () => JSON.parse(execFileSync(process.execPath, [HOOK], { input: '{}', encoding: 'utf8', timeout: 5000,
     env: { ...process.env, AGENT_CHAT_ROOT: root, AGENT_CHAT_STATE_ROOT: path.join(dir, 'state'), AGENT_CHAT_VERIFY_CHILD: '' } }) || '{}')
   assert.doesNotMatch(start().systemMessage ?? '', /won't use/)
-  fs.chmodSync(root, 0o755)
-  assert.ok(start().systemMessage.includes(`Agent-chat won't use ${root}: other users can read it, or it isn't a folder you own. Run chmod 700 on it, then reconnect agent-chat in /mcp.`))
+  // POSIX mode bits only; Windows reads the folder's ACL and suggests icacls.
+  if (!WIN) {
+    fs.chmodSync(root, 0o755)
+    assert.ok(start().systemMessage.includes(`Agent-chat won't use ${root}: other users can read it, or it isn't a folder you own. Run chmod 700 on it, then reconnect agent-chat in /mcp.`))
+  }
   // chmod can't fix a link, so it gets its own advice.
-  fs.chmodSync(root, 0o700); fs.renameSync(root, root + '-real'); fs.symlinkSync(root + '-real', root)
-  assert.ok(start().systemMessage.includes(`Agent-chat won't use ${root}: it's a link or not a folder.`))
+  fs.chmodSync(root, 0o700); fs.renameSync(root, root + '-real'); linkFolder(root + '-real', root)
+  // The line shows a folder under the home folder home-relative (Windows' temp folder is one).
+  const home = os.homedir() + path.sep, shown = root.startsWith(home) ? '~' + path.sep + root.slice(home.length) : root
+  assert.ok(start().systemMessage.includes(`Agent-chat won't use ${shown}: it's a link or not a folder.`))
 })
 
 test('Codex is told about AGENT_CHAT_CODEX_HOME when its thread is not in the profile in use', async t => {

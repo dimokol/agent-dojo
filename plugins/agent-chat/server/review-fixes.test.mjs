@@ -16,6 +16,7 @@ import { observeClaudeLifecycle, resolveClaudeConversation, pruneClaudeLifecycle
 import { registrationFailureLine } from './claude-session-hook.mjs'
 import { sessionUnreadLine } from './notices.mjs'
 import { isVerifiedVersion } from './claude-versions.mjs'
+import { claudeEndpoint, linkFolder, posixModesOnly, psOnly, socketOnly } from './test-platform.mjs'
 
 // Each test reproduces one finding from the review of PR #6 and fails without its fix.
 const SERVER = fileURLToPath(new URL('./server.mjs', import.meta.url))
@@ -36,7 +37,7 @@ async function sleeper(t) {
 test('M5: a second tab on the same conversation does not take the rooms from a live first tab', async t => {
   const dir = temp(t, 'm5'), profile = path.join(dir, 'profile'); fs.mkdirSync(profile, { mode: 0o700 })
   const [clientA, serverA, clientB] = [await sleeper(t), await sleeper(t), await sleeper(t)], self = processIdentity(process.pid)
-  const tab = (n, client, server) => ({ runtime: 'claude', id: UUID(n), profileHome: profile, endpoint: `/private/tab${n}.sock`,
+  const tab = (n, client, server) => ({ runtime: 'claude', id: UUID(n), profileHome: profile, endpoint: claudeEndpoint(`/private/tab${n}.sock`),
     clientPid: client.pid, clientStart: client.start, serverPid: server.pid, serverStart: server.start })
   const options = { root: path.join(dir, 'chats'), stateRoot: path.join(dir, 'state'), projectRoot: dir }
   createStore(options).createRoom({ room: 'room', title: 'room' })
@@ -46,11 +47,13 @@ test('M5: a second tab on the same conversation does not take the rooms from a l
     return current
   }
   const a = service(tab(1, clientA, serverA)), b = service(tab(2, clientB, self))
+  // Closed even when an assertion fails: an open service's folder watch keeps the test process alive.
+  t.after(() => { a.close(); b.close() })
   await a.call('join_room', { room: 'room', agent: 'PM' })
   await b.call('list_rooms', {})
   const member = createStore(options).memberships().find(row => row.agent === 'PM')
   a.close(); b.close()
-  assert.equal(member.session.endpoint, '/private/tab1.sock')
+  assert.equal(member.session.endpoint, claudeEndpoint('/private/tab1.sock'))
 })
 
 test('M6: a delivery cancelled at the deadline before it sent anything stays pending', async t => {
@@ -136,12 +139,12 @@ test('L5: a stopped Codex daemon is recognised by its error number, not its Engl
   assert.deepEqual(await control.profileThreads(dir), [])
 })
 
-test('M4: lsof is looked up in the places macOS and Linux keep it', () => {
+test('M4: lsof is looked up in the places macOS and Linux keep it', psOnly, () => {
   assert.equal(processExecutable(process.pid, { candidates: ['/nonexistent/lsof'] }), null)
   assert.equal(processExecutable(process.pid, { candidates: ['/nonexistent/lsof', '/usr/sbin/lsof', '/usr/bin/lsof'] }), fs.realpathSync(process.execPath))
 })
 
-test('N1: wake-ups paused by a failed version check say how to check again', async t => {
+test('N1: wake-ups paused by a failed version check say how to check again', socketOnly, async t => {
   const stateRoot = temp(t, 'n1'), directory = path.join(stateRoot, 'verification'); fs.mkdirSync(directory)
   fs.writeFileSync(path.join(directory, '2.1.306.json'), JSON.stringify({ schema: 1, version: '2.1.306', status: 'failed' }))
   const adapters = createAdapters({ requireProcessIdentity: false, stateRoot, verifiedClaudeVersion: () => false })
@@ -149,7 +152,7 @@ test('N1: wake-ups paused by a failed version check say how to check again', asy
   assert.match(result.detail, /^Claude wake-ups paused: version 2\.1\.306 failed its check; .*verify-claude\.mjs --run/)
 })
 
-test('L6: notices that keep failing are reported once on stderr, and mail still goes through', t => {
+test('L6: notices that keep failing are reported once on stderr, and mail still goes through', posixModesOnly, t => {
   const dir = temp(t, 'l6'), stateRoot = path.join(dir, 'state')
   const store = createStore({ root: path.join(dir, 'chats'), projectRoot: dir, stateRoot })
   store.createRoom({ room: 'room', title: 'room' })
@@ -168,7 +171,7 @@ test('L6: notices that keep failing are reported once on stderr, and mail still 
 
 test('L7: state made under a linked spelling of the chat root survives the upgrade', t => {
   const dir = temp(t, 'l7'), project = path.join(dir, 'project'), stateRoot = path.join(dir, 'state')
-  fs.mkdirSync(project); fs.mkdirSync(path.join(dir, 'real')); fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'link'))
+  fs.mkdirSync(project); fs.mkdirSync(path.join(dir, 'real')); linkFolder(path.join(dir, 'real'), path.join(dir, 'link'))
   const linked = path.join(dir, 'link', 'chats')
   const first = createStore({ root: linked, projectRoot: project, stateRoot })
   first.createRoom({ room: 'room', title: 'room' })

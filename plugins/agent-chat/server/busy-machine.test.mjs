@@ -9,6 +9,7 @@ import {createService,capInbox,transientError,BUSY} from './server.mjs'
 import {createStore} from './store.mjs'
 import {processIdentity} from './native-session.mjs'
 import {currentClaudeConversation} from './claude-lifecycle.mjs'
+import { claudeEndpoint, WIN } from './test-platform.mjs'
 
 const fixture=t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'agent-chat-busy-')))
@@ -21,8 +22,8 @@ const fixture=t=>{
 }
 const adapters={async deliver(){return {status:'accepted'}}}
 const self=processIdentity(process.pid)
-const claude=(profile,extra={})=>({runtime:'claude',id:'00000000-0000-4000-8000-000000000021',profileHome:profile,endpoint:'/private/agent-chat-busy.sock',clientPid:self.pid,clientStart:self.start,serverPid:self.pid,serverStart:self.start,...extra})
-const deadPid=()=>spawnSync('/usr/bin/true').pid
+const claude=(profile,extra={})=>({runtime:'claude',id:'00000000-0000-4000-8000-000000000021',profileHome:profile,endpoint:claudeEndpoint('/private/agent-chat-busy.sock'),clientPid:self.pid,clientStart:self.start,serverPid:self.pid,serverStart:self.start,...extra})
+const deadPid=()=>(WIN?spawnSync(process.execPath,['-e','']):spawnSync('/usr/bin/true')).pid
 
 test('a native Claude session is checked once per connection, so a slow ps later cannot fail a call',async t=>{
   const {store,profile,own}=fixture(t)
@@ -127,8 +128,9 @@ test("Claude's per-process session file names the current conversation, and any 
   assert.equal(read(),null,'pid inside the file must match')
   write({pid:4242,sessionId:conversation,messagingSocketPath:path.join(root,'other')})
   assert.equal(read(),null,'another socket')
-  write({pid:4242,sessionId:conversation},0o622)
-  assert.equal(read(),null,'writable by others')
+  // POSIX mode bits only; on Windows the profile folder's ACL is what keeps the file private.
+  if(!WIN){write({pid:4242,sessionId:conversation},0o622)
+    assert.equal(read(),null,'writable by others')}
   write({pid:4242,sessionId:'not-a-uuid'})
   assert.equal(read(),null)
 })

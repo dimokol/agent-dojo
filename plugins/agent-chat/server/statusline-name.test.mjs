@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { claudeParticipantId, nameFiles } from './notice-files.mjs'
 import { nativeLabel } from './statusline-name.mjs'
 import { slug } from './store-files.mjs'
+import { assertMode, WIN } from './test-platform.mjs'
 
 const script = fileURLToPath(new URL('./statusline-name.mjs', import.meta.url))
 const C1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', C2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -41,8 +42,8 @@ test('the native session name becomes the cached default label: compared first, 
   const f = fixture(t), file = f.files(C1).native
   assert.equal(f.run({ session_id: C1, session_name: 'Review UI' }), '', 'no canonical name yet prints nothing')
   assert.deepEqual(native(file), { schema: 1, label: 'review-ui' })
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700)
+  assertMode(file, 0o600)
+  assertMode(path.dirname(file), 0o700)
   const before = stamp(file)
   f.run({ session_id: C1, session_name: 'Review UI' }); f.run({ session_id: C1, session_name: '  review   ui!' })
   assert.deepEqual(stamp(file), before, 'the same label is never rewritten')
@@ -69,11 +70,14 @@ test('any error prints nothing, exits 0 and writes nothing', t => {
   assert.equal(f.run({ session_id: C1 }, ['--state-root', 'relative']), '')
   f.canonical(C1, '\u001b[31mred', 'agent')
   assert.equal(f.run({ session_id: C1 }), '', 'no terminal escapes reach the status line')
-  f.canonical(C1, 'Fine', 'agent'); fs.chmodSync(f.files(C1).name, 0o644)
-  assert.equal(f.run({ session_id: C1 }), '', 'a file readable by others is not trusted')
-  fs.chmodSync(f.files(C1).name, 0o600); fs.chmodSync(path.join(f.stateRoot, 'names'), 0o755)
-  assert.equal(f.run({ session_id: C1, session_name: 'New name' }), '')
-  assert.equal(fs.existsSync(f.files(C1).native), false)
+  // POSIX mode bits only; on Windows the state folder's ACL keeps the name files private.
+  if (!WIN) {
+    f.canonical(C1, 'Fine', 'agent'); fs.chmodSync(f.files(C1).name, 0o644)
+    assert.equal(f.run({ session_id: C1 }), '', 'a file readable by others is not trusted')
+    fs.chmodSync(f.files(C1).name, 0o600); fs.chmodSync(path.join(f.stateRoot, 'names'), 0o755)
+    assert.equal(f.run({ session_id: C1, session_name: 'New name' }), '')
+    assert.equal(fs.existsSync(f.files(C1).native), false)
+  }
 })
 
 test('a stalled stdin ends silently within the deadline', async t => {

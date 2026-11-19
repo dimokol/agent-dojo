@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
 import { processIdentity } from './native-session.mjs'
+import { claudeEndpoint } from './test-platform.mjs'
 
 // ac203 third review round: mail lost when a participant's rows move to another identity.
 // 1. a rename onto a closed name that has a row in a room where this tab's own mail waits,
@@ -27,7 +28,7 @@ function fixture(t) {
   for (const room of ['r1', 'r2']) store.createRoom({ room, title: room })
   const own = service => (closers.push(() => service.close()), service)
   const profile = n => { const p = path.join(dir, 'profile' + n); fs.mkdirSync(p, { recursive: true, mode: 0o700 }); return p }
-  const claude = (launch, home) => ({ runtime: 'claude', id: launch, profileHome: home, endpoint: '/private/agent-chat-ac203-review3.sock',
+  const claude = (launch, home) => ({ runtime: 'claude', id: launch, profileHome: home, endpoint: claudeEndpoint('/private/agent-chat-ac203-review3.sock'),
     clientPid: self.pid, clientStart: self.start, serverPid: self.pid, serverStart: self.start })
   const native = (session, conversation) => own(createService({ store, env: {}, adapters: accepted, inferSession: () => session,
     resolveConversation: typeof conversation === 'function' ? conversation : () => conversation }))

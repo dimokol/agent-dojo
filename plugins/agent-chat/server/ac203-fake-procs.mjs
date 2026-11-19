@@ -10,7 +10,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const START = 'Mon Jan  1 00:00:00 2024'
-export const uid = process.getuid()
+export const uid = process.getuid?.() // undefined on Windows, where the files using this skip
 export const calls = []
 const defaults = () => ({ psP: 'ok', psComm: 'ok', psAx: 'ok', lsof: 'ok', git: 'ok', axComm: 'claude', exe: null, gitOut: null, extraPids: [] })
 export const mode = defaults()

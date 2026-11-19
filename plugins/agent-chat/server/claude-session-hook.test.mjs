@@ -8,6 +8,7 @@ import {execFileSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
 import {claudeFailureFlags} from './claude-failure-flags.mjs'
 import {verificationNotice} from './claude-session-hook.mjs'
+import { assertMode } from './test-platform.mjs'
 test('a version lookup failure after spawning reports queued registration accurately',()=>{
  const messages=verificationNotice(()=>{throw Error('installation moved')})
  assert.equal(messages.length,1)
@@ -167,7 +168,7 @@ test('the failure line shows once per session; another session or a new failure 
   // The shared daemon passes each tab's own environment: a tab with the check off sees no flags.
   assert.deepEqual(claudeFailureFlags(f.stateRoot,Date.now(),{AGENT_CHAT_VERSION_CHECK:'off'}),[])
   assert.equal(claudeFailureFlags(f.stateRoot,Date.now(),{AGENT_CHAT_VERSION_CHECK:'on'}).length,2)
-  for(const name of fs.readdirSync(path.join(f.stateRoot,'shown')))assert.equal(fs.statSync(path.join(f.stateRoot,'shown',name)).mode&0o777,0o600)
+  for(const name of fs.readdirSync(path.join(f.stateRoot,'shown')))assertMode(path.join(f.stateRoot,'shown',name),0o600)
 })
 test('a second startup the same day stays quiet about orphan mail',t=>{
   const f=noticeFixture(t),oldest=new Date(Date.now()-50*3600000).toISOString()
@@ -185,7 +186,7 @@ test('a failed registration says which step failed and records it for diagnosis'
   assert.match(out.systemMessage,/Agent-chat could not register this tab: (this tab's messaging socket failed its safety check|the process check \(ps, lsof\) failed or timed out)\. It tries again at the next prompt, and any agent-chat call registers it too; mail is kept\.|^Agent-chat needs the native Claude Code install/)
   const record=JSON.parse(fs.readFileSync(path.join(f.stateRoot,'lifecycle-failures','latest.json'),'utf8'))
   assert.ok(['socket','process','install'].includes(record.stage))
-  assert.equal(fs.statSync(path.join(f.stateRoot,'lifecycle-failures','latest.json')).mode&0o777,0o600)
+  assertMode(path.join(f.stateRoot,'lifecycle-failures','latest.json'),0o600)
 })
 test('registration tries three times a short pause apart, then reports the failure',async()=>{
   let calls=0

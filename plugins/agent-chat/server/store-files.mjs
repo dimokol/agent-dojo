@@ -114,6 +114,12 @@ export function atomicJson(file, value) {
     try { fs.unlinkSync(temp) } catch (error) { if (error.code !== 'ENOENT') throw error }
   }
 }
+function truncateTo(file, size) {
+  let fd
+  try { fd = fs.openSync(file, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0)); fs.ftruncateSync(fd, size); fs.fsyncSync(fd) }
+  catch {}
+  finally { if (fd !== undefined) try { fs.closeSync(fd) } catch {} }
+}
 export function append(file, text) {
   safeFile(file)
   const created = !fs.existsSync(file)
@@ -122,7 +128,8 @@ export function append(file, text) {
     const size = fs.fstatSync(fd).size
     try { fs.writeFileSync(fd, text); fs.fsyncSync(fd) }
     // A torn line would make every later read of this log fail; put the file back as it was.
-    catch (error) { try { fs.ftruncateSync(fd, size); fs.fsyncSync(fd) } catch {} throw error }
+    // Windows refuses ftruncate on an append handle (EPERM), so a second, plain write handle does it there.
+    catch (error) { try { fs.ftruncateSync(fd, size); fs.fsyncSync(fd) } catch { truncateTo(file, size) } throw error }
   } finally { fs.closeSync(fd) }
   if (created) {
     fsyncDir(path.dirname(file))

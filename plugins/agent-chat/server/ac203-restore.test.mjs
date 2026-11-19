@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
 import { pruneHousekeeping } from './notice-files.mjs'
+import { claudeEndpoint } from './test-platform.mjs'
 
 const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'claude-session-hook.mjs')
 const LAUNCH = '00000000-0000-4000-8000-00000000aa01', CONV = '00000000-0000-4000-8000-00000000aa02'
@@ -32,7 +33,7 @@ const fixture = t => {
     const tasks = path.join(dirs.state, 'hook-tasks'); fs.mkdirSync(tasks, { recursive: true, mode: 0o700 })
     const task = path.join(tasks, '11111111-1111-4111-8111-111111111111.json')
     fs.writeFileSync(task, JSON.stringify({ projectRoot: dirs.project, observation: { source: 'resume', conversationId: CONV,
-      session: { runtime: 'claude', id: LAUNCH, conversationId: CONV, lifecycle: true, profileHome: path.join(root, 'gone-profile'), endpoint: '/private/x.sock', clientPid: 1, clientStart: 'x' } } }), { mode: 0o600 })
+      session: { runtime: 'claude', id: LAUNCH, conversationId: CONV, lifecycle: true, profileHome: path.join(root, 'gone-profile'), endpoint: claudeEndpoint('/private/x.sock'), clientPid: 1, clientStart: 'x' } } }), { mode: 0o600 })
     return spawnSync(process.execPath, [HOOK, '--work', task], { env, encoding: 'utf8', timeout: 30_000 })
   }
   return { root, ...dirs, env, gate, prompt, failRestore }
@@ -52,7 +53,7 @@ test('the line goes away once a later agent-chat call from that tab succeeds', a
   f.failRestore()
   assert.ok(f.prompt().includes(LINE))
   const store = createStore({ root: f.chats, stateRoot: f.state, projectRoot: f.project })
-  const session = { runtime: 'claude', id: LAUNCH, profileHome: f.profile, endpoint: '/private/agent-chat-restore.sock', clientPid: process.pid, clientStart: 'Mon Jan  1 00:00:00 2024', serverPid: process.pid, serverStart: 'Mon Jan  1 00:00:00 2024' }
+  const session = { runtime: 'claude', id: LAUNCH, profileHome: f.profile, endpoint: claudeEndpoint('/private/agent-chat-restore.sock'), clientPid: process.pid, clientStart: 'Mon Jan  1 00:00:00 2024', serverPid: process.pid, serverStart: 'Mon Jan  1 00:00:00 2024' }
   const svc = createService({ store, env: { CLAUDE_CODE_SESSION_ID: LAUNCH }, adapters: { async deliver() { return { status: 'accepted' } } }, inferSession: () => session, resolveConversation: () => CONV })
   t.after(() => svc.close())
   await svc.call('list_rooms')

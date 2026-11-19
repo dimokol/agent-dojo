@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { inferNativeSession, processIdentities, processIdentity, isProcessLive, trustedClaudeCommand } from './native-session.mjs'
+import { psOnly, WIN } from './test-platform.mjs'
 
 const ID = '12345678-1234-1234-1234-123456789abc'
 function fixture(t) {
@@ -16,7 +17,8 @@ function fixture(t) {
 test('native process birth stamp survives locale differences and detects mismatch', () => {
   const identity = processIdentity(process.pid)
   assert.equal(identity.pid, process.pid)
-  assert.match(identity.start, /^\w{3} \w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/)
+  // ps lstart on macOS; on Windows agent-chat-win.exe reports the creation time as a FILETIME count.
+  assert.match(identity.start, WIN ? /^\d+$/ : /^\w{3} \w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/)
   assert.equal(isProcessLive(identity), true)
   assert.equal(isProcessLive({ ...identity, start: 'different birth' }), false)
   assert.equal(processIdentity(-1), null)
@@ -69,9 +71,12 @@ test('missing, writable, relative profiles and invalid endpoints refuse native i
   const meta = { 'x-codex-turn-metadata': { thread_id: ID } }
   assert.equal(inferNativeSession(meta, { AGENT_CHAT_CODEX_HOME: path.join(home, 'missing') }), null)
   assert.equal(inferNativeSession(meta, { AGENT_CHAT_CODEX_HOME: 'relative' }), null)
-  fs.chmodSync(home, 0o777)
-  assert.equal(inferNativeSession(meta, { AGENT_CHAT_CODEX_HOME: home }), null)
-  fs.chmodSync(home, 0o700)
+  // POSIX mode bits only; on Windows the profile folder's ACL decides.
+  if (!WIN) {
+    fs.chmodSync(home, 0o777)
+    assert.equal(inferNativeSession(meta, { AGENT_CHAT_CODEX_HOME: home }), null)
+    fs.chmodSync(home, 0o700)
+  }
   assert.equal(inferNativeSession({}, { CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_SESSION_ID: ID, CLAUDE_CODE_MESSAGING_SOCKET: 'ws://localhost' }), null)
 })
 
@@ -107,7 +112,7 @@ test('trusted Claude command policy accepts owned installation paths and refuses
 })
 
 
-test('batch snapshot deduplicates live PIDs, rejects dead PIDs before ps, and preserves birth stamps', () => {
+test('batch snapshot deduplicates live PIDs, rejects dead PIDs before ps, and preserves birth stamps', psOnly, () => {
   const expected = processIdentity(process.pid)
   let calls = 0
   const snapshot = processIdentities([process.pid, process.ppid, process.pid, -1, '1', 2147483647], {
@@ -128,7 +133,7 @@ test('batch snapshot deduplicates live PIDs, rejects dead PIDs before ps, and pr
   assert.equal(processIdentities([], { executor() { throw new Error('must not run') } }).size, 0)
 })
 
-test('batch snapshot refuses wrong UID, unrequested rows and malformed birth stamps', () => {
+test('batch snapshot refuses wrong UID, unrequested rows and malformed birth stamps', psOnly, () => {
   const birth = processIdentity(process.pid).start
   const snapshot = processIdentities([process.pid], { executor() {
     return `${process.pid} ${process.getuid() + 1} ${birth}\n999 ${process.getuid()} ${birth}\n${process.pid} ${process.getuid()} malformed\n`
@@ -142,7 +147,7 @@ test('batch snapshot refuses wrong UID, unrequested rows and malformed birth sta
 })
 
 
-test('ps exiting 1 without a row for a PID that still exists is a failed check, never a dead process', () => {
+test('ps exiting 1 without a row for a PID that still exists is a failed check, never a dead process', psOnly, () => {
   const birth = processIdentity(process.pid).start
   const failed = () => { throw Object.assign(new Error('ps failed'), { status: 1, stdout: '' }) }
   assert.throws(() => processIdentities([process.pid], { executor: failed }), error => error.code === 'CHAT_PRESENCE_UNAVAILABLE')
