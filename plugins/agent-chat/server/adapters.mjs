@@ -6,6 +6,7 @@ import net from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { isProcessLive, runningClaudeVersion, codexBinary } from './native-session.mjs'
 import { createNativeControl } from './native-control.mjs'
+import { ringClaude, wakeMode, defaultWakeDir } from './wake-ring.mjs'
 import { projectRoot } from './project-scope.mjs'
 import { isVerifiedVersion } from './claude-versions.mjs'
 import { resolveClaudeConversation, claudeLifecycleAncestors, claudeProcessListing, listingLookup, claudeExecutable, CALL_BOUNDS } from './claude-lifecycle.mjs'
@@ -186,7 +187,8 @@ function writeClaude(session, content, { connect, timeoutMs, signal }) {
 export function createAdapters({ executor = runProcess, connect = net.createConnection, timeoutMs = 5_000,
   maxConcurrent = 2, requireProcessIdentity = true, control = createNativeControl(), verifiedClaudeVersion = isVerifiedVersion, executableOf = claudeExecutable,
   resolveConversation = resolveClaudeConversation, listingMaxAgeMs = 1000,
-  stateRoot=process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(),'.local/state/agent-chat') } = {}) {
+  stateRoot=process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(),'.local/state/agent-chat'),
+  wake = wakeMode(), wakeDir = defaultWakeDir() } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000 ||
       !Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 8) throw new TypeError('Invalid adapter limits')
   const active = new Set()
@@ -275,6 +277,15 @@ export function createAdapters({ executor = runProcess, connect = net.createConn
       // The receiving tab's own binary decides: a tab started before an update
       // keeps its verified version. The installed CLI answers only when the
       // tab's version is unknown.
+      // Hook mode: no version check and no CLI subprocess, just the ring file (see claude-versions.mjs).
+      if (session.runtime === 'claude' && wake === 'hook') {
+        if (input.signal?.aborted) return { attempted: false, status: 'pending', reason: 'deadline', detail: 'Delivery cancelled before ring; mail kept.' }
+        try {
+          const { armed } = ringClaude({ dir: wakeDir, claudePid: session.clientPid, room: input.room, messageIds: batch.ids })
+          return armed ? { attempted: true, status: 'rung', detail: 'The tab was rung and reads its inbox on its next turn.' }
+            : { attempted: true, status: 'accepted', detail: 'The tab is busy; it wakes for this mail when its turn ends.' }
+        } catch { return { attempted: false, status: 'pending', reason: 'unavailable', detail: 'Wake file could not be written; mail kept.' } }
+      }
       let running
       if (session.runtime === 'claude') try { running = session.claudeVersion ?? (session.clientPid ? runningClaudeVersion(executableOf(session.clientPid, session.clientStart)) : undefined) } catch {}
       const version = running ? null : await capability(['--version'])

@@ -11,29 +11,43 @@ import { createAdapters } from './adapters.mjs'
 import { projectRoot } from './project-scope.mjs'
 import { processIdentity, isProcessLive } from './native-session.mjs'
 import { isVerifiedVersion, recordVerifiedVersion } from './claude-versions.mjs'
+import { wakeHookSettings } from './wake-ring.mjs'
+import { fileURLToPath } from 'node:url'
 
 const turnNotice = 'Verification requests two short Claude turns, or three with --resume-case. Provider calls are not counted. Resume cases never change the version allowlist.'
 console.log(turnNotice)
 const options = process.argv.slice(2)
 const resumeCase = options.includes('--resume-case')
 if (resumeCase) options.splice(options.indexOf('--resume-case'), 1)
+// --wake hook checks the asyncRewake hook path (AGENT_CHAT_WAKE=hook) instead of the socket. Hook
+// mode has no version allowlist, so this run reports a result and records nothing.
+const wakeAt = options.indexOf('--wake')
+const wakeHook = wakeAt >= 0 && options[wakeAt + 1] === 'hook'
+if (wakeHook) options.splice(wakeAt, 2)
 if (!options.length) {
-  console.log('To authorize and run: node verify-claude.mjs --run [--resume-case] [--state-root /private/operator-fixture]')
-} else if (options[0] === '--run' && (options.length === 1 ||
+  console.log('To authorize and run: node verify-claude.mjs --run [--resume-case | --wake hook] [--state-root /private/operator-fixture]')
+} else if (options[0] === '--run' && !(wakeHook && resumeCase) && !options.includes('--wake') && (options.length === 1 ||
     (options.length === 3 && options[1] === '--state-root' && path.isAbsolute(options[2])))) {
-  await verify(options.length === 3 ? options[2] : undefined, resumeCase)
+  await verify(options.length === 3 ? options[2] : undefined, resumeCase, wakeHook)
 } else {
-  console.log('Usage: node verify-claude.mjs --run [--resume-case] [--state-root /private/operator-fixture]')
+  console.log('Usage: node verify-claude.mjs --run [--resume-case | --wake hook] [--state-root /private/operator-fixture]')
   process.exitCode = 1
 }
 
 function requireProof(value, code) { if (!value) throw new Error(code) }
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 
-async function verify(recordRoot, resumeCase = false) {
+// The wake waiter ships next to this file, in the plugin and in a release.
+function wakeScript() {
+  const file = fileURLToPath(new URL('./wake.sh', import.meta.url))
+  if (!fs.existsSync(file)) throw new Error('WAKE_HOOK_SCRIPT_MISSING')
+  return file
+}
+
+async function verify(recordRoot, resumeCase = false, wakeHook = false) {
   let temp, child, childExited, service, store, watcher, timeout, startupTimeout, diagnosticTimer, abortWait, probe
   const owned = new Map()
-  const result = { passed: false, probe: 'agent-chat-inbox-v1', requestedModelTurns: resumeCase ? 3 : 2, resumeCase,
+  const result = { passed: false, probe: 'agent-chat-inbox-v1', requestedModelTurns: resumeCase ? 3 : 2, resumeCase, wake: wakeHook ? 'hook' : 'socket',
     limits: ['Native Claude CLI in a private PTY, not actual GUI tabs.',
       'No manual live config edits, authentication copies, installs, or global daemon changes. The probe conversation files are removed afterwards; the native CLI keeps its prompt-history line.'] }
   let resumePhase = false, resumeCommandSent = false, resumeSentAt = 0, preResumeWorkerPid, preResumeSocketHash
@@ -64,7 +78,9 @@ async function verify(recordRoot, resumeCase = false) {
     store.materialize()
     // The observed exact version is allowed only inside this private test harness.
     // No environment or MCP argument can change production version policy.
-    service = createService({ store, adapters: createAdapters({ verifiedClaudeVersion: candidate => candidate === version }), env: {} })
+    const wakeDir = path.join(temp, 'wake')
+    service = createService({ store, adapters: createAdapters({ verifiedClaudeVersion: candidate => candidate === version,
+      wake: wakeHook ? 'hook' : 'socket', wakeDir }), env: {} })
     const worker = path.join(temp, 'mcp-worker.mjs')
     const diagnosticFile = path.join(temp, 'mcp-diagnostics.json')
     const moduleURL = name => new URL(name, import.meta.url).href
@@ -113,6 +129,12 @@ input.on('close',()=>service.close());
     const args = [binary, '--session-id', sessionId,
       '--strict-mcp-config', '--mcp-config', config, '--tools', '', '--allowedTools', allowedTools]
     const env = { ...(resumeCase ? resumeCaseEnv(process.env) : process.env), TERM: 'xterm-256color', AGENT_CHAT_VERIFY_CHILD:'1' }
+    if (wakeHook) {
+      const settings = path.join(temp, 'wake-settings.json')
+      fs.writeFileSync(settings, JSON.stringify(wakeHookSettings({ command: JSON.stringify(wakeScript()) })), { mode: 0o600 })
+      args.push('--settings', settings)
+      Object.assign(env, { AGENT_CHAT_WAKE: 'hook', AGENT_CHAT_WAKE_DIR: wakeDir })
+    } else { delete env.AGENT_CHAT_WAKE; delete env.AGENT_CHAT_WAKE_DIR }
     probe = { cwd, configHome: env.CLAUDE_CONFIG_DIR || undefined, ids: [targetId] }
     delete env.CLAUDE_CODE_SESSION_ID
     delete env.CLAUDE_CODE_MESSAGING_TOKEN
@@ -308,7 +330,7 @@ input.on('close',()=>service.close());
     if (result.mcpDiagnostics) { delete result.mcpDiagnostics.launchSessionId; delete result.mcpDiagnostics.workerPid; delete result.mcpDiagnostics.socketHash }
     if(result.explicitAckCalls!==0 || result.mcpDiagnostics?.deniedToolCalls!==0){result.passed=false;process.exitCode=1;result.failure={stage:'verify_tool_scope',code:'UNEXPECTED_TOOL_CALL'}}
   }
-  if (result.passed && !resumeCase) {
+  if (result.passed && !resumeCase && !wakeHook) {
     try { recordVerifiedVersion(result.version, result, { stateRoot: recordRoot }) }
     catch { result.passed = false; result.failure = { stage: 'record_exact_version', code: 'VERIFICATION_RECORD_UNAVAILABLE' }; process.exitCode = 1 }
   }

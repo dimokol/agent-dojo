@@ -27,7 +27,7 @@ import { adoptProcess, releaseProcess } from './native-session.mjs'
 // The only environment a tab hands over. Anything else (tokens, the tab's whole shell) stays home.
 export const HELLO_ENV = ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
   'AGENT_CHAT_CODEX_HOME', 'AGENT_CHAT_VERIFY_CHILD', 'AGENT_CHAT_ROOT', 'AGENT_CHAT_STATE_ROOT', 'AGENT_CHAT_VERSION_CHECK',
-  'AGENT_CHAT_DIR', 'AGENT_CHAT_PROJECT']
+  'AGENT_CHAT_DIR', 'AGENT_CHAT_PROJECT', 'AGENT_CHAT_WAKE', 'AGENT_CHAT_WAKE_DIR']
 const HELLO_TIMEOUT_MS = 10_000
 const HELLO_MAX_BYTES = 64 * 1024
 

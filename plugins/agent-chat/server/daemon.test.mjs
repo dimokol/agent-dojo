@@ -187,3 +187,10 @@ test('bridge: a call the daemon never answered because it died gets an error, an
     assert.equal(await tab.close(), 0)
   } finally { fx.cleanup() }
 })
+
+test('hook wake settings pass from the tab to the daemon, and bridge.c lists the same keys', () => {
+  const env = { AGENT_CHAT_WAKE: 'hook', AGENT_CHAT_WAKE_DIR: '/w' }
+  assert.deepEqual(parseHello(JSON.stringify({ v: 1, pid: 4242, ppid: 4241, cwd: '/tmp', env })).env, env)
+  const listed = /HELLO_ENV\[\] = \{([^}]*)\}/.exec(fs.readFileSync(new URL('./bridge.c', import.meta.url), 'utf8'))[1]
+  assert.deepEqual([...listed.matchAll(/"([A-Z_]+)"/g)].map(m => m[1]), HELLO_ENV)
+})

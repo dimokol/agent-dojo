@@ -63,7 +63,10 @@ export function sessionClaudeVersion(session, { executable = processExecutable, 
 
 // Off, wake-ups never pause after a Claude update and no probe runs: the public plugin's
 // default. Only the exact value 'off' turns it off.
-export const versionCheckOff = (env = process.env) => (env.AGENT_CHAT_VERSION_CHECK ?? distribution.versionCheck) === 'off'
+// The check guards the CLI's private socket, which an update can break. The asyncRewake hook
+// (AGENT_CHAT_WAKE=hook) is a documented feature and a broken one only loses the wake, never the
+// mail, so hook mode skips the check and its two-turn verification after every Claude update.
+export const versionCheckOff = (env = process.env) => (env.AGENT_CHAT_VERSION_CHECK ?? distribution.versionCheck) === 'off' || env.AGENT_CHAT_WAKE === 'hook'
 export function isVerifiedVersion(version, { stateRoot = STATE_ROOT, env = process.env } = {}) {
   if (versionCheckOff(env)) return true
   if (typeof version !== 'string' || !VERSION.test(version)) return false

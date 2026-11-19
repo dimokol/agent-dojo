@@ -18,6 +18,7 @@ import { claudeFailureFlags } from './claude-failure-flags.mjs'
 import { readNativeLabel } from './notices.mjs'
 import { isVerifiedVersion, sessionClaudeVersion, versionCheckOff } from './claude-versions.mjs'
 import { shownInInbox, transcriptOf } from './transcript-receipts.mjs'
+import { clearRing, defaultWakeDir, sweepWakeFiles, wakeMode } from './wake-ring.mjs'
 export { projectRoot } from './project-scope.mjs'
 const { createStore, defaultChatRoot } = await import('./store.mjs')
 const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
@@ -26,7 +27,9 @@ const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
 // started, the tab's bridge for a connection to the shared daemon. Its parent is the tab.
 // A tab that sets AGENT_CHAT_VERSION_CHECK decides for itself; otherwise this process's setting does,
 // which for the shared daemon is the distribution default (bridges never hand it to the daemon).
-const versionEnv = env => env.AGENT_CHAT_VERSION_CHECK !== undefined ? env : process.env
+// A tab's own settings win; a shared daemon's environment is the fallback. Hook mode is a version
+// setting too: it turns the check off (claude-versions.mjs).
+const versionEnv = env => env.AGENT_CHAT_VERSION_CHECK !== undefined || env.AGENT_CHAT_WAKE !== undefined ? env : process.env
 export const ownProcess = () => ({ pid: process.pid, ppid: process.ppid, cwd: process.cwd() })
 export function createService({ store, proc = ownProcess(), adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, lifecycleStart=resolveClaudeLifecycleStart, isLive=isProcessLive,
   observeLifecycle=observeClaudeLifecycle, currentConversation=currentClaudeConversation, reconcileEveryMs=10_000,
@@ -498,6 +501,9 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
         store.updateDelivery({ ...bound, message_ids: result.map(item => item.message_id), status: 'delivered' })
       } catch (error) { if (error.message === 'session is not joined as this agent') return; throw error }
       for (const item of result) delivered.set(JSON.stringify([args.room, args.agent, item.message_id]), { identity: bound, sessionId: bound.sessionId, conversationId: nativeSession?.conversationId, messageId: item.message_id, writtenAt })
+      // The read settles this tab's wake ring for these messages, so the next waiter doesn't wake
+      // the session again for mail it already has.
+      if (nativeSession?.runtime === 'claude' && wakeMode(env) === 'hook') try { clearRing({ dir: defaultWakeDir(env), claudePid: nativeSession.clientPid, room: args.room, messageIds: result.map(item => item.message_id) }) } catch {}
       // A held-back message still reads as rung, and a rung receipt blocks new rings for 15 minutes.
       // Back to pending, so the next post rings this tab again if it stops before reading the rest.
       const rest = heldBack.get(key(args.room, args.agent)) ?? []
@@ -694,6 +700,15 @@ export function logWithheld(stateRoot, tool, error) {
     fs.appendFileSync(file, line + '\n', { mode: 0o600 })
   } catch {}
 }
+// Wake files of Claude tabs that are gone, and waiters such a tab left running. Off the startup
+// path, since it may run ps, and at most every ten minutes per wake folder in a shared daemon.
+const lastWakeSweep = new Map()
+function sweepWakeFilesSoon(env) {
+  const dir = defaultWakeDir(env)
+  if (Date.now() - (lastWakeSweep.get(dir) ?? 0) < 600_000) return
+  lastWakeSweep.set(dir, Date.now())
+  setTimeout(() => { try { sweepWakeFiles({ dir }) } catch {} }, 2000).unref()
+}
 // One tab's connection: its store and service, set up from the tab's environment and folder.
 // Errors here are start-up failures; startupErrorText says what the user can do about them.
 export async function openConnection({ env = process.env, proc = ownProcess(), scopeOf = projectRoot } = {}) {
@@ -705,7 +720,9 @@ export async function openConnection({ env = process.env, proc = ownProcess(), s
   let scope
   try { scope = await scopeOf(proc.cwd, { strict: true, timeoutMs: 10_000 }) } catch { scope = await scopeOf(proc.cwd, { strict: true, timeoutMs: 10_000 }) }
   const store = createStore({ root, projectRoot: scope, stateRoot: env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat') })
-  const adapters = createAdapters({ stateRoot: store.stateRoot, verifiedClaudeVersion: (version, options) => isVerifiedVersion(version, { ...options, env: versionEnv(env) }) })
+  const adapters = createAdapters({ stateRoot: store.stateRoot, verifiedClaudeVersion: (version, options) => isVerifiedVersion(version, { ...options, env: versionEnv(env) }),
+    wake: wakeMode(env), wakeDir: defaultWakeDir(env) })
+  if (wakeMode(env) === 'hook') sweepWakeFilesSoon(env)
   return { store, service: createService({ store, env, proc, adapters }) }
 }
 export const openDaemonConnection = options => openConnection({ ...options, scopeOf: projectRootAsync })
