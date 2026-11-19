@@ -9,7 +9,9 @@ import { execFileSync } from 'node:child_process'
 import { WIN_HELPER } from './platform.mjs'
 
 if (process.platform === 'win32' && !process.env.AGENT_CHAT_TEST_TEMP) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tests-'))
+  // realpathSync.native expands 8.3 short names (C:\Users\RUNNER~1 on CI), which git and Claude
+  // never print, so paths compare equal.
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tests-')))
   const state = execFileSync(WIN_HELPER, ['acl-lock', dir], { encoding: 'utf8', windowsHide: true }).trim()
   if (state !== 'private') throw new Error(`could not make the test temp folder private: ${state}`)
   process.env.TEMP = process.env.TMP = process.env.AGENT_CHAT_TEST_TEMP = dir
