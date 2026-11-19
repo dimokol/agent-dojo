@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { hasModeBits, ownedByMe, WINDOWS, WIN_HELPER, windowsProcessRows } from './platform.mjs'
 
 function presenceUnavailable() {
   return Object.assign(new Error('Agent-chat process presence is unavailable; retry later'), { code: 'CHAT_PRESENCE_UNAVAILABLE' })
@@ -17,6 +18,16 @@ export function processIdentities(pids, { executor = execFileSync, signal = proc
   const exists = pid => { try { signal(pid, 0); return true } catch (error) { return error.code === 'EPERM' } }
   const candidates = [...new Set(pids)].filter(pid => Number.isSafeInteger(pid) && pid > 0 && exists(pid))
   const result = new Map()
+  if (WINDOWS && executor === execFileSync) {
+    let rows
+    try { rows = windowsProcessRows(candidates, { timeoutMs }) } catch { throw presenceUnavailable() }
+    for (const pid of candidates) {
+      const row = rows.get(pid)
+      if (row?.mine === true && typeof row.start === 'string') result.set(pid, { pid, start: row.start })
+      else if (!row && exists(pid)) throw presenceUnavailable()
+    }
+    return result
+  }
   for (let offset = 0; offset < candidates.length; offset += 256) {
     const batch = candidates.slice(offset, offset + 256)
     let output
@@ -72,6 +83,15 @@ export function isProcessLive(identity) {
 function processCommand(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null
   try { process.kill(pid, 0) } catch (error) { if (error.code !== 'EPERM') return null }
+  // Windows: the full image path, which is what the install check needs (there is no lsof step).
+  if (WINDOWS) {
+    let row
+    try { row = windowsProcessRows([pid], { timeoutMs: 1000 }).get(pid) } catch { throw presenceUnavailable() }
+    if (!row) { try { process.kill(pid, 0) } catch (error) { if (error.code !== 'EPERM') return null } throw presenceUnavailable() }
+    if (row.mine !== true) return null
+    if (typeof row.image !== 'string') throw presenceUnavailable()
+    return row.image
+  }
   let output
   try {
     output = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid=', '-o', 'comm='], {
@@ -95,8 +115,13 @@ function processCommand(pid) {
 // the executable without reading argv or accepting a caller-chosen process name.
 // macOS keeps lsof in /usr/sbin, most Linux distributions in /usr/bin.
 const LSOF = ['/usr/sbin/lsof', '/usr/bin/lsof']
-export const lsofBinary = (candidates = LSOF) => candidates.find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true } catch { return false } })
+export const lsofBinary = (candidates = LSOF) => WINDOWS && candidates === LSOF ? (fs.existsSync(WIN_HELPER) ? WIN_HELPER : undefined)
+  : candidates.find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true } catch { return false } })
 export function processExecutable(pid, { timeoutMs = 1000, candidates = LSOF } = {}) {
+  if (WINDOWS && candidates === LSOF) {
+    try { const row = windowsProcessRows([pid], { timeoutMs }).get(pid); return row?.mine === true && typeof row.image === 'string' ? row.image : null }
+    catch { return null }
+  }
   const lsof = lsofBinary(candidates)
   if (!lsof) return null
   try {
@@ -131,6 +156,7 @@ export function runningClaudeVersion(executable) {
 
 export function trustedClaudeCommand(command) {
   if (typeof command !== 'string' || !path.isAbsolute(command) || command.includes('\0') || path.normalize(command) !== command) return false
+  if (WINDOWS) return trustedWindowsClaude(command)
   const installation = path.join(os.homedir(), '.local/share/claude')
   const versions = path.join(installation, 'versions')
   const alias = path.join(os.homedir(), '.local/bin/claude')
@@ -140,11 +166,24 @@ export function trustedClaudeCommand(command) {
     if (path.dirname(canonical) !== versions || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(path.basename(canonical))) return false
     for (const directory of [installation, versions]) {
       const stat = fs.lstatSync(directory)
-      if (!stat.isDirectory() || stat.uid !== process.getuid() || stat.mode & 0o022) return false
+      if (!stat.isDirectory() || !ownedByMe(stat) || hasModeBits(stat, 0o022)) return false
     }
     const stat = fs.lstatSync(canonical)
-    return stat.isFile() && stat.uid === process.getuid() && !(stat.mode & 0o022) && !!(stat.mode & 0o111)
+    return stat.isFile() && ownedByMe(stat) && !hasModeBits(stat, 0o022) && !!hasModeBits(stat, 0o111)
   } catch { return false }
+}
+
+// Windows native install: %USERPROFILE%\.local\bin\claude.exe is a full copy of the newest
+// version (not a link), versions\<x.y.z> are the binaries themselves, and an update renames a
+// running claude.exe to claude.exe.old.<ms>.<pid> in place (relay 039). Windows reports no owner
+// or mode bits through Node; the user profile's ACL keeps these folders private.
+export function trustedWindowsClaude(command, home = os.homedir()) {
+  const bin = path.join(home, '.local', 'bin'), versions = path.join(home, '.local', 'share', 'claude', 'versions')
+  const name = path.basename(command), folder = path.dirname(command)
+  const ok = (folder.toLowerCase() === bin.toLowerCase() && /^claude\.exe(?:\.old\.\d+\.\d+)?$/i.test(name)) ||
+    (folder.toLowerCase() === versions.toLowerCase() && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name))
+  if (!ok) return false
+  try { const stat = fs.lstatSync(command); return stat.isFile() && !stat.isSymbolicLink() } catch { return false }
 }
 
 function profile(value) {
@@ -152,7 +191,7 @@ function profile(value) {
   try {
     const canonical = fs.realpathSync(value)
     const stat = fs.statSync(canonical)
-    return stat.isDirectory() && stat.uid === process.getuid() && !(stat.mode & 0o022) ? canonical : null
+    return stat.isDirectory() && ownedByMe(stat) && !hasModeBits(stat, 0o022) ? canonical : null
   } catch { return null }
 }
 

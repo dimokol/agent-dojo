@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { hasModeBits, ownedByMe } from './file-modes.mjs'
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export const NAME = /^[A-Za-z0-9._-]{1,64}$/
@@ -24,7 +25,7 @@ export const nameFiles = (stateRoot, participantId) => ({
 export function privateDirectory(directory, create = false) {
   if (create) try { fs.mkdirSync(directory, { mode: 0o700 }) } catch (error) { if (error.code !== 'EEXIST') throw error }
   const stat = fs.lstatSync(directory)
-  if (!stat.isDirectory() || stat.uid !== process.getuid() || stat.mode & 0o077) throw Error('unsafe notice directory')
+  if (!stat.isDirectory() || !ownedByMe(stat) || hasModeBits(stat, 0o077)) throw Error('unsafe notice directory')
 }
 export function readPrivate(file, max = 4096) {
   let fd
@@ -32,7 +33,7 @@ export function readPrivate(file, max = 4096) {
   catch (error) { if (error.code === 'ENOENT') return null; throw error }
   try {
     const stat = fs.fstatSync(fd)
-    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || stat.mode & 0o077 || stat.size > max) throw Error('unsafe notice file')
+    if (!stat.isFile() || stat.nlink !== 1 || !ownedByMe(stat) || hasModeBits(stat, 0o077) || stat.size > max) throw Error('unsafe notice file')
     return fs.readFileSync(fd, 'utf8')
   } finally { fs.closeSync(fd) }
 }

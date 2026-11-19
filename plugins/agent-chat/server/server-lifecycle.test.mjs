@@ -7,6 +7,7 @@ import {createService} from './server.mjs'
 import {createStore} from './store.mjs'
 import {processIdentity} from './native-session.mjs'
 import {observeClaudeLifecycle,resolveClaudeConversation} from './claude-lifecycle.mjs'
+import { claudeEndpoint } from './test-platform.mjs'
 
 test('lost lifecycle resolution cannot rejoin an old conversation through its launch identity',async t=>{
  const root=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'agent-chat-life-service-'))
@@ -58,10 +59,10 @@ test('a resumed tab reads its mail although its MCP server was spawned with anot
  const profile=path.join(root,'profile');fs.mkdirSync(profile,{mode:0o700})
  const store=createStore({root:path.join(root,'chats'),stateRoot:path.join(root,'state'),projectRoot:root})
  const self=processIdentity(process.pid),parent={pid:self.pid,start:self.start,trusted:true}
- const launch='00000000-0000-4000-8000-000000000011',resumed='00000000-0000-4000-8000-000000000012',endpoint='/private/agent-chat-test.sock'
+ const launch='00000000-0000-4000-8000-000000000011',resumed='00000000-0000-4000-8000-000000000012',endpoint=claudeEndpoint('/private/agent-chat-test.sock')
  const facts={ancestors:()=>[parent],validateSocket:value=>value}
  store.createRoom({room:'room',title:'Resume room'})
- store.join({room:'room',agent:'Reader',session:{runtime:'claude',id:resumed,conversationId:resumed,profileHome:profile,endpoint:'/private/old.sock',clientPid:1,clientStart:'earlier process'}})
+ store.join({room:'room',agent:'Reader',session:{runtime:'claude',id:resumed,conversationId:resumed,profileHome:profile,endpoint:claudeEndpoint('/private/old.sock'),clientPid:1,clientStart:'earlier process'}})
  store.deactivateSession(resumed)
  const writer={runtime:'manual',id:'writer'}
  store.join({room:'room',agent:'Writer',session:writer})

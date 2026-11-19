@@ -7,6 +7,7 @@ import net from 'node:net'
 import { once } from 'node:events'
 import { execFileSync } from 'node:child_process'
 import { observeClaudeLifecycle, resolveClaudeConversation, validateClaudeLifecycleSocket, claudeLifecycleAncestors, lifecycleProjectRoot, pruneClaudeLifecycle } from './claude-lifecycle.mjs'
+import { assertMode, linkFolder, socketOnly, WIN } from './test-platform.mjs'
 const LAUNCH = '12345678-1234-1234-1234-123456789abc'
 const RESUMED = '22345678-1234-1234-1234-123456789abc'
 const CLEAR = '32345678-1234-1234-1234-123456789abc'
@@ -41,8 +42,8 @@ test('startup, native resume and clear record real conversation separately from 
   assert.equal(cleared.previousConversationId, RESUMED)
   assert.equal(resolveClaudeConversation(first.session, f.resolveOptions), CLEAR)
   const file = path.join(f.stateRoot, 'lifecycle', fs.readdirSync(path.join(f.stateRoot, 'lifecycle'))[0])
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700)
+  assertMode(file, 0o600)
+  assertMode(path.dirname(file), 0o700)
 })
 
 test('cross-profile, project, socket and PID generation cannot borrow mappings', t => {
@@ -83,11 +84,14 @@ test('unsafe, corrupted and busy metadata fail closed without replacing it', t =
   assert.throws(() => resolveClaudeConversation(session, f.resolveOptions), damaged)
   assert.throws(() => observeClaudeLifecycle(f.input, f.env, f.options), damaged)
   assert.equal(fs.readFileSync(file, 'utf8'), '{bad')
-  fs.writeFileSync(file, valid); fs.chmodSync(file, 0o644)
-  assert.throws(() => resolveClaudeConversation(session, f.resolveOptions), damaged)
+  // POSIX mode bits only; on Windows the state folder's ACL keeps the record private.
+  if (!WIN) {
+    fs.writeFileSync(file, valid); fs.chmodSync(file, 0o644)
+    assert.throws(() => resolveClaudeConversation(session, f.resolveOptions), damaged)
+  }
 })
 
-test('socket validation requires actual owned PID socket with private parent and mode', async t => {
+test('socket validation requires actual owned PID socket with private parent and mode', socketOnly, async t => {
   // Use the current process's unused name only. Never replace another CLI socket.
   const directory = path.join(fs.realpathSync('/tmp'), 'cc-socks')
   if (!fs.existsSync(directory)) fs.mkdirSync(directory, { mode: 0o700 })
@@ -114,11 +118,11 @@ test('bounded ancestor inspection refuses impossible PID and Node executable', (
 
 test('nested directories and linked worktrees resolve to the same canonical common-root scope', t => {
   const f = fixture(t)
-  execFileSync('/usr/bin/git', ['init', '-q', f.project])
-  execFileSync('/usr/bin/git', ['-C', f.project, '-c', 'user.name=Lifecycle Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture'])
+  execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', ['init', '-q', f.project])
+  execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', ['-C', f.project, '-c', 'user.name=Lifecycle Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture'])
   const nested = path.join(f.project, 'nested'); fs.mkdirSync(nested)
   const worktree = path.join(f.root, 'worktree')
-  execFileSync('/usr/bin/git', ['-C', f.project, 'worktree', 'add', '--detach', '-q', worktree])
+  execFileSync(process.platform === 'win32' ? 'git' : '/usr/bin/git', ['-C', f.project, 'worktree', 'add', '--detach', '-q', worktree])
   assert.equal(lifecycleProjectRoot(nested), f.project)
   assert.equal(lifecycleProjectRoot(worktree), f.project)
   const first = observeClaudeLifecycle({ ...f.input, cwd: nested }, f.env, {...f.options,scope:lifecycleProjectRoot})
@@ -167,7 +171,7 @@ test('an in-CLI /resume resolves for the MCP server even though hooks now see th
 // never registered while the MCP server accepted the same profile.
 test('a symlinked profile registers at its real path, the same one the MCP server records', t => {
   const f = fixture(t)
-  const alias = path.join(f.root, 'alias'); fs.symlinkSync(f.profile, alias)
+  const alias = path.join(f.root, 'alias'); linkFolder(f.profile, alias)
   const { session } = observeClaudeLifecycle(f.input, { ...f.env, CLAUDE_CONFIG_DIR: alias }, f.options)
   assert.equal(session.profileHome, f.profile)
   assert.equal(resolveClaudeConversation(session, f.resolveOptions), LAUNCH)

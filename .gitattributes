@@ -1,0 +1,4 @@
+# Windows checkouts: shell scripts and hash lists must keep LF, the helper is binary.
+*.sh text eol=lf
+*.sha256 text eol=lf
+*.exe binary

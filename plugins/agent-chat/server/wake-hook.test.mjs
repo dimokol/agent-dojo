@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -14,9 +14,14 @@ const WAITERS = process.platform === 'win32' ? ['node'] : ['sh', 'node']
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 function tempDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-wake-')) }
+// Every stand-in and waiter is stopped at the end, also when a failed assertion skipped its test's
+// own cleanup: one left running keeps this test process from exiting (seen as a hang on Windows).
+const spawned = new Set()
+after(() => { for (const child of spawned) child.kill() })
 // A stand-in for the Claude CLI: any live process gives the hook a PID to watch.
 function fakeClaude() {
   const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' })
+  spawned.add(child)
   return child
 }
 function runHook(kind, dir, claudePid, { event = 'Stop', env = {} } = {}) {
@@ -26,6 +31,7 @@ function runHook(kind, dir, claudePid, { event = 'Stop', env = {} } = {}) {
       CLAUDE_PID: claudePid === undefined ? '' : String(claudePid), CLAUDE_CODE_ENTRYPOINT: 'cli', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
+  spawned.add(child)
   child.stdin.on('error', () => {})
   child.stdin.end(JSON.stringify({ hook_event_name: event, session_id: 'test-session' }))
   let stderr = ''

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import {scheduleVerification,verificationStatus,runVerificationWorker,clearFailure,refreshVerificationAttention} from './claude-auto-verify.mjs'
+import { assertMode } from './test-platform.mjs'
 // These tests cover the version gate, which the plugin ships switched off; turn it on here so a
 // plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
 process.env.AGENT_CHAT_VERSION_CHECK = 'on'
@@ -19,7 +20,7 @@ test('fast scheduling detaches fixed worker, records before spawn, and launches 
  const first=scheduled(input,{spawnWorker(binary,a,o){args=a;options=o;assert.equal(verificationStatus(version,input).status,'running');const child=new EventEmitter();child.unref=()=>{};return child}})
  assert.equal(first.result.status,'launched');assert.equal(options.detached,true);assert.equal(options.env.AGENT_CHAT_VERIFY_CHILD,'1');assert.equal(options.stdio,'ignore');assert.equal(args[1],'--worker')
  const second=scheduled({...input,profileHome:input.cwd});assert.equal(second.launched,0);assert.equal(second.result.status,'running')
- assert.equal(fs.statSync(first.result.flagPath).mode&0o777,0o600)
+ assertMode(first.result.flagPath,0o600)
 })
 test('concurrent processes schedule only one durable attempt',async t=>{
  const input=fixture(t),module=new URL('./claude-auto-verify.mjs',import.meta.url).href
@@ -36,12 +37,12 @@ test('concurrent worker calls claim once and successful proof requires durable v
 test('unknown stdout and rejected proof fail closed with visible private flags and no retry',async t=>{
  for(const stdout of ['unknown private stdout',JSON.stringify({...proof,version:'2.1.999'}),JSON.stringify({...proof,passed:false})]){
   const first=scheduled(fixture(t));const result=await runVerificationWorker(first.input,{executor:async()=>({stdout}),isVerified:()=>false})
-  assert.equal(result.status,'failed');assert.match(result.message,/2\.1\.301/);assert.match(result.message,/Operator action/);assert.equal(fs.statSync(result.logPath).mode&0o777,0o600);assert.doesNotMatch(fs.readFileSync(result.logPath,'utf8'),/unknown private stdout/);assert.equal(scheduled(first.input).launched,0)
+  assert.equal(result.status,'failed');assert.match(result.message,/2\.1\.301/);assert.match(result.message,/Operator action/);assertMode(result.logPath,0o600);assert.doesNotMatch(fs.readFileSync(result.logPath,'utf8'),/unknown private stdout/);assert.equal(scheduled(first.input).launched,0)
  }
 })
 test('spawn failure and crashed worker deadline remain failed without automatic retry',t=>{
  const input=fixture(t);const failed=scheduled(input,{spawnWorker(){throw Error('secret environment')}});assert.equal(failed.result.status,'failed');assert.equal(failed.result.reason,'WORKER_SPAWN_FAILED');assert.equal(scheduled(input).launched,0)
- const next=scheduled(fixture(t),{now:()=>1000});assert.equal(verificationStatus(version,{stateRoot:next.input.stateRoot,now:()=>200000}).status,'running','a retry fits inside the deadline');const expired=verificationStatus(version,{stateRoot:next.input.stateRoot,now:()=>250000});assert.equal(expired.status,'failed');assert.equal(expired.reason,'WORKER_DEADLINE_EXCEEDED');assert.equal(fs.statSync(expired.logPath).mode&0o777,0o600);assert.equal(scheduled(next.input).launched,0)
+ const next=scheduled(fixture(t),{now:()=>1000});assert.equal(verificationStatus(version,{stateRoot:next.input.stateRoot,now:()=>200000}).status,'running','a retry fits inside the deadline');const expired=verificationStatus(version,{stateRoot:next.input.stateRoot,now:()=>250000});assert.equal(expired.status,'failed');assert.equal(expired.reason,'WORKER_DEADLINE_EXCEEDED');assertMode(expired.logPath,0o600);assert.equal(scheduled(next.input).launched,0)
 })
 test('corrupt marker and corrupt allowlist fail closed and retain evidence',t=>{
  const input=fixture(t),first=scheduled(input);fs.writeFileSync(first.result.flagPath,'corrupt',{mode:0o600});assert.throws(()=>scheduleVerification(input,{isVerified:()=>false}),/operator recovery/);assert.equal(fs.readFileSync(first.result.flagPath,'utf8'),'corrupt')
@@ -56,13 +57,13 @@ test('asynchronous worker spawn errors become durable flags with a private diagn
  const input=fixture(t);let child
  const first=scheduled(input,{spawnWorker(){child=new EventEmitter();child.unref=()=>{};return child}})
  child.emit('error',Error('must never log private arguments'))
- const status=verificationStatus(version,input);assert.equal(status.status,'failed');assert.equal(status.reason,'WORKER_SPAWN_FAILED');assert.equal(fs.statSync(status.logPath).mode&0o777,0o600);assert.doesNotMatch(fs.readFileSync(status.logPath,'utf8'),/private arguments/)
+ const status=verificationStatus(version,input);assert.equal(status.status,'failed');assert.equal(status.reason,'WORKER_SPAWN_FAILED');assertMode(status.logPath,0o600);assert.doesNotMatch(fs.readFileSync(status.logPath,'utf8'),/private arguments/)
 })
 
 test('explicit clear preserves failed marker and log in private history and does not launch',async t=>{
  const first=scheduled(fixture(t));await runVerificationWorker(first.input,{executor:async()=>({stdout:'unknown'}),isVerified:()=>false})
  const previous=fs.readFileSync(first.result.flagPath,'utf8'),log=fs.readFileSync(first.result.logPath,'utf8')
- const cleared=clearFailure(version,first.input);assert.equal(cleared.status,'cleared');assert.equal(cleared.automaticRetryLaunched,false);assert.equal(fs.statSync(cleared.backup).mode&0o777,0o700)
+ const cleared=clearFailure(version,first.input);assert.equal(cleared.status,'cleared');assert.equal(cleared.automaticRetryLaunched,false);assertMode(cleared.backup,0o700)
  assert.equal(fs.readFileSync(path.join(cleared.backup,'attempt.json'),'utf8'),previous);assert.equal(fs.readFileSync(path.join(cleared.backup,'diagnostic.log'),'utf8'),log)
  assert.equal(verificationStatus(version,first.input).status,'absent');assert.equal(scheduled(first.input).result.status,'launched')
 })
@@ -84,7 +85,7 @@ test('operator clear CLI handles only the selected fixture version without model
 
 test('attention sentinel survives overlapping versions and clears only after the last failed attempt is cleared',async t=>{
  const input=fixture(t),first=scheduled(input),other=scheduled({...input,version:'2.1.302'}),attention=path.join(input.stateRoot,'verification','attention')
- assert.equal(fs.statSync(attention).mode&0o777,0o600)
+ assertMode(attention,0o600)
  await runVerificationWorker(first.input,{executor:async()=>({stdout:JSON.stringify(proof)}),isVerified:v=>v===version})
  assert.equal(fs.existsSync(attention),true)
  await runVerificationWorker(other.input,{executor:async()=>({stdout:'unknown'}),isVerified:v=>v===version})

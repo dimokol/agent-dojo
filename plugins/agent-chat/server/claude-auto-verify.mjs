@@ -8,6 +8,7 @@ import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { locked, atomicJson } from './store-files.mjs'
 import { isVerifiedVersion } from './claude-versions.mjs'
+import { hasModeBits, modeIs, ownedByMe, ownedByMeOrRoot } from './platform.mjs'
 const execute = promisify(execFile)
 const SCRIPT = fileURLToPath(import.meta.url)
 const VERIFIER = fileURLToPath(new URL('./verify-claude.mjs', import.meta.url))
@@ -43,20 +44,20 @@ function location(version,stateRoot=ROOT,create=false) {
     current=path.join(current,part)
     if(!fs.existsSync(current)) {if(!create)return null;try{fs.mkdirSync(current,{mode:0o700})}catch(error){if(error.code!=='EEXIST')throw unavailable()}}
     const stat=fs.lstatSync(current)
-    if(!stat.isDirectory()||stat.isSymbolicLink()||![0,process.getuid()].includes(stat.uid))throw unavailable()
+    if(!stat.isDirectory()||stat.isSymbolicLink()||!ownedByMeOrRoot(stat))throw unavailable()
   }
   const rootStat=fs.lstatSync(stateRoot)
-  if(rootStat.uid!==process.getuid()||(rootStat.mode&0o777)!==0o700)throw unavailable()
+  if(!ownedByMe(rootStat)||!modeIs(rootStat, 0o700))throw unavailable()
   const dir=path.join(stateRoot,'verification')
   if(!fs.existsSync(dir)){if(!create)return null;try{fs.mkdirSync(dir,{mode:0o700})}catch(error){if(error.code!=='EEXIST')throw unavailable()}}
   const stat=fs.lstatSync(dir)
-  if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||(stat.mode&0o777)!==0o700)throw unavailable()
+  if(!stat.isDirectory()||stat.isSymbolicLink()||!ownedByMe(stat)||!modeIs(stat, 0o700))throw unavailable()
   return {dir,file:path.join(dir,version+'.json'),log:path.join(dir,version+'.log'),lock:path.join(dir,version)}
 }
 function read(file) {
   try {
     const stat=fs.lstatSync(file)
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.uid!==process.getuid()||(stat.mode&0o777)!==0o600)throw unavailable()
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!ownedByMe(stat)||!modeIs(stat, 0o600))throw unavailable()
     const value=JSON.parse(fs.readFileSync(file,'utf8'))
     if(value.schema!==1||!VERSION.test(value.version)||!['running','failed','already_verified'].includes(value.status)||typeof value.attempt!=='string'||!Number.isFinite(value.startedAt)||!Number.isFinite(value.deadlineAt))throw unavailable()
     return value
@@ -79,7 +80,7 @@ function attentionFile(paths,needed) {
     try {fs.writeFileSync(file,'Claude verification needs attention.\n',{mode:0o600,flag:'wx'})}
     catch(error){if(error.code!=='EEXIST')throw unavailable()}
     const stat=fs.lstatSync(file)
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.uid!==process.getuid()||(stat.mode&0o777)!==0o600)throw unavailable()
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!ownedByMe(stat)||!modeIs(stat, 0o600))throw unavailable()
   }else {try {fs.unlinkSync(file)}catch(error){if(error.code!=='ENOENT')throw unavailable()}}
 }
 export function refreshVerificationAttention({stateRoot=ROOT,isVerified=isVerifiedVersion}={}) {
@@ -120,11 +121,11 @@ export function clearFailure(version,{stateRoot=ROOT}={}) {
     const history=path.join(paths.dir,'history')
     try {fs.mkdirSync(history,{mode:0o700})}catch(error){if(error.code!=='EEXIST')throw unavailable()}
     const stat=fs.lstatSync(history)
-    if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||(stat.mode&0o777)!==0o700)throw unavailable()
+    if(!stat.isDirectory()||stat.isSymbolicLink()||!ownedByMe(stat)||!modeIs(stat, 0o700))throw unavailable()
     let logPresent=false
     try {
       const log=fs.lstatSync(paths.log)
-      if(!log.isFile()||log.isSymbolicLink()||log.nlink!==1||log.uid!==process.getuid()||(log.mode&0o777)!==0o600)throw unavailable()
+      if(!log.isFile()||log.isSymbolicLink()||log.nlink!==1||!ownedByMe(log)||!modeIs(log, 0o600))throw unavailable()
       logPresent=true
     }catch(error){if(error.code!=='ENOENT')throw unavailable()}
     const backup=path.join(history,version+'-'+randomUUID());fs.mkdirSync(backup,{mode:0o700})
@@ -150,7 +151,7 @@ export function scheduleVerification({version,stateRoot=ROOT,cwd,profileHome},{s
   for(const dir of [cwd,profileHome]) {
     if(typeof dir!=='string'||!path.isAbsolute(dir))throw unavailable()
     const stat=fs.lstatSync(dir)
-    if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||stat.mode&0o022)throw unavailable()
+    if(!stat.isDirectory()||stat.isSymbolicLink()||!ownedByMe(stat)||hasModeBits(stat, 0o022))throw unavailable()
   }
   const attempt=randomUUID(),startedAt=now()
   const record={schema:1,version,status:'running',attempt,startedAt,deadlineAt:startedAt+DEADLINE}

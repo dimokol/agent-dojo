@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { codexBinary } from './native-session.mjs'
+import { hasModeBits, modeIs, ownedByMe, ownedByMeOrRoot } from './platform.mjs'
 
 const require = createRequire(import.meta.url)
 const execute = promisify(execFile)
@@ -39,7 +40,7 @@ async function threadMetadata(client, session) {
 
 function privateDirectory(value) {
   const stat = fs.lstatSync(value)
-  if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) {
+  if (!stat.isDirectory() || !ownedByMe(stat) || !modeIs(stat, 0o700)) {
     throw new Error('Native control directory is not private')
   }
 }
@@ -49,7 +50,7 @@ function privateDirectory(value) {
 export function validateControlSocket(profileHome, advertisedPath) {
   const home = fs.realpathSync(profileHome)
   const homeStat = fs.statSync(home)
-  if (!homeStat.isDirectory() || homeStat.uid !== process.getuid() || homeStat.mode & 0o022) {
+  if (!homeStat.isDirectory() || !ownedByMe(homeStat) || hasModeBits(homeStat, 0o022)) {
     throw new Error('Native profile is not owned by this user')
   }
   const aliasParent = path.join(home, 'app-server-control')
@@ -57,21 +58,21 @@ export function validateControlSocket(profileHome, advertisedPath) {
   if (advertisedPath !== alias) throw new Error('Unexpected native control endpoint')
   privateDirectory(aliasParent)
   const link = fs.lstatSync(alias)
-  if (link.uid !== process.getuid() || (!link.isSymbolicLink() && !link.isSocket())) {
+  if (!ownedByMe(link) || (!link.isSymbolicLink() && !link.isSocket())) {
     throw new Error('Invalid native control alias')
   }
   const canonical = fs.realpathSync(alias)
   if (canonical.includes(':') || canonical.includes('\0')) throw new Error('Invalid native socket path')
   const socket = fs.lstatSync(canonical)
-  if (!socket.isSocket() || socket.uid !== process.getuid() || (socket.mode & 0o777) !== 0o600) {
+  if (!socket.isSocket() || !ownedByMe(socket) || !modeIs(socket, 0o600)) {
     throw new Error('Native control socket is not private')
   }
   privateDirectory(path.dirname(canonical))
   let current = path.dirname(path.dirname(canonical))
   while (true) {
     const stat = fs.lstatSync(current)
-    if (!stat.isDirectory() || ![0, process.getuid()].includes(stat.uid) ||
-        ((stat.mode & 0o022) && !(stat.mode & 0o1000))) throw new Error('Unsafe native socket ancestor')
+    if (!stat.isDirectory() || !ownedByMeOrRoot(stat) ||
+        (hasModeBits(stat, 0o022) && !hasModeBits(stat, 0o1000))) throw new Error('Unsafe native socket ancestor')
     const next = path.dirname(current)
     if (next === current) break
     current = next

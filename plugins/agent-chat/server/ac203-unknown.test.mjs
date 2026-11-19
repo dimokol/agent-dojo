@@ -9,8 +9,11 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { needsModuleMocks, install, reset, mode, calls, count, START, tempRoot } from './ac203-fake-procs.mjs'
+import { psOnly, WIN } from './test-platform.mjs'
 
-if (!needsModuleMocks(import.meta.url)) await define()
+// The stand-ins replace ps, lsof and git output; Windows asks agent-chat-win.exe instead.
+if (WIN) test('ps, lsof and git presence stand-ins', psOnly, () => {})
+else if (!needsModuleMocks(import.meta.url)) await define()
 
 async function define() {
   // A native install under a private HOME, so the trusted-executable check passes without the real one.

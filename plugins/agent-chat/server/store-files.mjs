@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { fsyncDir, hasModeBits, ownedByMe, WINDOWS, windowsFolderPrivate } from './platform.mjs'
 const { DatabaseSync } = await import('node:sqlite')
 
 export function identifier(value, name = 'identifier') {
@@ -24,14 +25,14 @@ export function roomFromTitle(title) {
 // exact fix; the rest of the project keeps working. Modes are never changed behind the user's back.
 // A link, a hard link or an item owned by someone else is left to ensureDirectory and safeFile.
 export function checkRoomFolder(room, dir) {
-  const owned = stat => stat.uid === process.getuid() && !stat.isSymbolicLink()
+  const owned = stat => ownedByMe(stat) && !stat.isSymbolicLink()
   const folder = fs.lstatSync(dir)
   if (folder.isDirectory() && owned(folder)) {
-    let loose = (folder.mode & 0o077) !== 0
+    let loose = hasModeBits(folder, 0o077)
     for (const name of ['room.json', 'chat.jsonl', 'chat.md']) {
       let stat
       try { stat = fs.lstatSync(path.join(dir, name)) } catch { continue }
-      if (stat.isFile() && owned(stat) && stat.nlink === 1 && stat.mode & 0o077) loose = true
+      if (stat.isFile() && owned(stat) && stat.nlink === 1 && hasModeBits(stat, 0o077)) loose = true
     }
     if (loose) {
       const quoted = `'${dir.replaceAll("'", "'\\''")}'`
@@ -48,7 +49,7 @@ export function unsafeFolderLine(dir) {
   try { const stat = fs.lstatSync(dir); link = stat.isSymbolicLink() || !stat.isDirectory() } catch {}
   return link
     ? `Agent-chat won't use ${shown}: it's a link or not a folder. Make it a real folder, or point AGENT_CHAT_ROOT or AGENT_CHAT_STATE_ROOT at one, then reconnect agent-chat in /mcp.`
-    : `Agent-chat won't use ${shown}: other users can read it, or it isn't a folder you own. Run chmod 700 on it, then reconnect agent-chat in /mcp.`
+    : `Agent-chat won't use ${shown}: other users can read it, or it isn't a folder you own. ${WINDOWS ? `Make it private with: icacls "${dir}" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"` : 'Run chmod 700 on it'}, then reconnect agent-chat in /mcp.`
 }
 // The root's parent resolved through links (the nearest existing ancestor), so every
 // spelling of one chat root keys the same state. The root itself stays as given:
@@ -76,19 +77,20 @@ export function migrateProjectState(root, projectRoot, stateRoot) {
   try { fs.renameSync(path.join(projects, given), path.join(projects, canonical)) } catch { /* None to move, or another session moved it. */ }
 }
 export function ensureDirectory(dir, mode = 0o700) {
-  const created = !fs.existsSync(dir)
-  if (created) fs.mkdirSync(dir, { recursive: true, mode })
+  // mkdirSync returns the first folder it made: every parent made here is ours too.
+  const first = fs.existsSync(dir) ? undefined : fs.mkdirSync(dir, { recursive: true, mode })
+  const created = first !== undefined
   const stat = fs.lstatSync(dir)
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o077)) throw Object.assign(new Error('unsafe directory ownership or permissions'), { path: dir })
-  if (created) {
-    const parent = fs.openSync(path.dirname(dir), 'r')
-    try { fs.fsyncSync(parent) } finally { fs.closeSync(parent) }
-  }
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !ownedByMe(stat) || hasModeBits(stat, 0o077)) throw Object.assign(new Error('unsafe directory ownership or permissions'), { path: dir })
+  // Windows: the ACL is the privacy check. A folder made here is locked to this user first, from
+  // the topmost one made, so a parent made on the way doesn't keep its loose inherited ACL.
+  if (WINDOWS && !windowsFolderPrivate(created ? first : dir, { created })) throw Object.assign(new Error('unsafe directory ownership or permissions'), { path: dir })
+  if (created) fsyncDir(path.dirname(dir))
 }
 export function safeFile(file) {
   try {
     const stat = fs.lstatSync(file)
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o077)) throw new Error('unsafe file ownership or permissions')
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !ownedByMe(stat) || hasModeBits(stat, 0o077)) throw new Error('unsafe file ownership or permissions')
   } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 export function readJson(file, fallback) {
@@ -106,12 +108,17 @@ export function atomicJson(file, value) {
     fs.fsyncSync(fd)
     fs.closeSync(fd); fd = undefined
     fs.renameSync(temp, file)
-    const parent = fs.openSync(path.dirname(file), 'r')
-    try { fs.fsyncSync(parent) } finally { fs.closeSync(parent) }
+    fsyncDir(path.dirname(file))
   } finally {
     if (fd !== undefined) fs.closeSync(fd)
     try { fs.unlinkSync(temp) } catch (error) { if (error.code !== 'ENOENT') throw error }
   }
+}
+function truncateTo(file, size) {
+  let fd
+  try { fd = fs.openSync(file, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0)); fs.ftruncateSync(fd, size); fs.fsyncSync(fd) }
+  catch {}
+  finally { if (fd !== undefined) try { fs.closeSync(fd) } catch {} }
 }
 export function append(file, text) {
   safeFile(file)
@@ -121,11 +128,11 @@ export function append(file, text) {
     const size = fs.fstatSync(fd).size
     try { fs.writeFileSync(fd, text); fs.fsyncSync(fd) }
     // A torn line would make every later read of this log fail; put the file back as it was.
-    catch (error) { try { fs.ftruncateSync(fd, size); fs.fsyncSync(fd) } catch {} throw error }
+    // Windows refuses ftruncate on an append handle (EPERM), so a second, plain write handle does it there.
+    catch (error) { try { fs.ftruncateSync(fd, size); fs.fsyncSync(fd) } catch { truncateTo(file, size) } throw error }
   } finally { fs.closeSync(fd) }
   if (created) {
-    const parent = fs.openSync(path.dirname(file), 'r')
-    try { fs.fsyncSync(parent) } finally { fs.closeSync(parent) }
+    fsyncDir(path.dirname(file))
   }
 }
 

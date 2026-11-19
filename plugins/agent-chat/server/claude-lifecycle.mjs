@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { processExecutable, trustedClaudeCommand, runningClaudeVersion, processIdentities } from './native-session.mjs'
+import { fsyncDir, hasModeBits, modeIs, ownedByMe, WINDOWS, WINDOWS_CLAUDE_ENDPOINT, windowsProcessRows } from './platform.mjs'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const DEFAULT_STATE = path.join(os.homedir(), '.local/state/agent-chat')
@@ -30,8 +31,8 @@ function canonicalDirectory(value, privateMode = false, create = false) {
   if (create && !fs.existsSync(value)) fs.mkdirSync(value, { recursive: true, mode: 0o700 })
   const canonical = fs.realpathSync(value)
   const stat = fs.lstatSync(value)
-  if (stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== process.getuid() ||
-      (privateMode ? (stat.mode & 0o777) !== 0o700 : !!(stat.mode & 0o022))) throw unavailable()
+  if (stat.isSymbolicLink() || !stat.isDirectory() || !ownedByMe(stat) ||
+      (privateMode ? !modeIs(stat, 0o700) : !!hasModeBits(stat, 0o022))) throw unavailable()
   return canonical
 }
 // Match the MCP store's Git common-root scope, including nested directories
@@ -39,7 +40,8 @@ function canonicalDirectory(value, privateMode = false, create = false) {
 export function lifecycleProjectRoot(cwd, { executor = execFileSync } = {}) {
   const canonical = canonicalDirectory(cwd)
   try {
-    const common = executor('/usr/bin/git', ['-C', canonical, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    // Windows has no fixed git location; Git for Windows puts it on PATH.
+    const common = executor(WINDOWS ? 'git' : '/usr/bin/git', ['-C', canonical, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
       encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'ignore'],
       env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
     }).trim()
@@ -52,19 +54,37 @@ export function lifecycleProjectRoot(cwd, { executor = execFileSync } = {}) {
 }
 export function validateClaudeLifecycleSocket(endpoint, pid) {
   if (typeof endpoint !== 'string' || !path.isAbsolute(endpoint) || endpoint.includes('\0')) throw unavailable()
+  // Windows: Claude's messaging endpoint is a named pipe, \\.\pipe\LOCAL\cc-msg-<32 hex> (relay
+  // 039), not keyed by PID. Agent-chat never connects to it there (Windows wakes through the
+  // hook), so only its shape is checked.
+  if (WINDOWS) {
+    if (!WINDOWS_CLAUDE_ENDPOINT.test(endpoint)) throw unavailable()
+    return endpoint
+  }
   if (!fs.lstatSync(endpoint).isSocket()) throw unavailable()
   const canonical = fs.realpathSync(endpoint)
   const expected = path.join(fs.realpathSync('/tmp'), 'cc-socks', `${pid}.sock`)
   if (canonical !== expected) throw unavailable()
   const parent = fs.lstatSync(path.dirname(canonical)), socket = fs.lstatSync(canonical)
-  if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o777) !== 0o700 ||
-      !socket.isSocket() || socket.uid !== process.getuid() || (socket.mode & 0o777) !== 0o600) throw unavailable()
+  if (!parent.isDirectory() || !ownedByMe(parent) || !modeIs(parent, 0o700) ||
+      !socket.isSocket() || !ownedByMe(socket) || !modeIs(socket, 0o600)) throw unavailable()
   return canonical
 }
 // One bounded ps snapshot, no argv or environment inspection of other processes. ps lists every
 // process of every owner, so one that listed nothing failed (a sysctl failure exits 0 with no rows):
 // that is unknown, never "no such process".
 export function claudeProcessListing({ psTimeoutMs } = HOOK_BOUNDS) {
+  if (WINDOWS) {
+    let all
+    try { all = windowsProcessRows([], { all: true, timeoutMs: psTimeoutMs }) } catch { throw unavailable('process') }
+    const rows = new Map(), listed = new Set(all.keys())
+    // command is the full image path on Windows, so the install check needs no lsof step.
+    for (const row of all.values()) if (row.mine === true && typeof row.start === 'string') {
+      rows.set(row.pid, { pid: row.pid, ppid: row.ppid, start: row.start, command: typeof row.image === 'string' ? row.image : row.name })
+    }
+    if (!listed.size) throw unavailable('process')
+    return { rows, listed }
+  }
   let output
   try {
     output = execFileSync('/bin/ps', ['-ax', '-o', 'pid=', '-o', 'ppid=', '-o', 'uid=', '-o', 'lstart=', '-o', 'comm='], {
@@ -136,7 +156,7 @@ function takeLock(lock) {
   catch (error) {
     if (error.code !== 'EEXIST') throw error
     const stat = fs.lstatSync(lock)
-    if (!stat.isFile() || stat.uid !== process.getuid() || Date.now() - stat.mtimeMs < STALE_LOCK_MS) throw error
+    if (!stat.isFile() || !ownedByMe(stat) || Date.now() - stat.mtimeMs < STALE_LOCK_MS) throw error
     fs.unlinkSync(lock)
     return fs.openSync(lock, 'wx', 0o600)
   }
@@ -152,7 +172,7 @@ const chainOf = record => Array.isArray(record?.clearedFrom) ? record.clearedFro
 function readRecord(file) {
   let stat
   try { stat = fs.lstatSync(file) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
-  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600) throw unavailable()
+  if (!stat.isFile() || stat.nlink !== 1 || !ownedByMe(stat) || !modeIs(stat, 0o600)) throw unavailable()
   const value = JSON.parse(fs.readFileSync(file, 'utf8'))
   if (value?.schema !== 1 || !UUID.test(value.launchId || '') || !UUID.test(value.conversationId || '') || !SOURCE.has(value.source) ||
       !Number.isSafeInteger(value.clientPid) || typeof value.clientStart !== 'string' || !value.clientStart ||
@@ -247,8 +267,7 @@ export function observeClaudeLifecycle(input, env = process.env, {
       const fd = fs.openSync(temporary, 'wx', 0o600)
       try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
       fs.renameSync(temporary, file); temporary = undefined
-      const dirFd = fs.openSync(directory, 'r')
-      try { fs.fsyncSync(dirFd) } finally { fs.closeSync(dirFd) }
+      fsyncDir(directory)
       return { session, conversationId: input.session_id, previousConversationId: same ? previous.conversationId : null,
         source: input.source, clearedFrom }
     } finally {
@@ -267,7 +286,7 @@ export function currentClaudeConversation(profileHome, clientPid, endpoint, clie
     if (!Number.isSafeInteger(clientPid) || clientPid <= 0) return null
     const file = path.join(canonicalDirectory(profileHome), 'sessions', `${clientPid}.json`)
     const stat = fs.lstatSync(file)
-    if (!stat.isFile() || stat.uid !== process.getuid() || stat.mode & 0o022 || stat.size > 65536) return null
+    if (!stat.isFile() || !ownedByMe(stat) || hasModeBits(stat, 0o022) || stat.size > 65536) return null
     const row = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (row?.pid !== clientPid || !UUID.test(row.sessionId ?? '')) return null
     const squash = value => String(value).replace(/\s+/g, ' ').trim()

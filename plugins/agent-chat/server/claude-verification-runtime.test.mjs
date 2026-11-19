@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { resumedTranscriptProof, resumeCaseEnv, resumeState, removeProbeConversation, terminalText, folderTrustPrompt } from './claude-verification-runtime.mjs'
+import { symlinks } from './test-platform.mjs'
 const targetId = '12345678-1234-1234-1234-123456789abc'
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owned-resume-proof-'))
@@ -39,7 +40,7 @@ test('wrong-session rows, assistant echoes and unrelated transcripts never prove
   assert.throws(() => resumedTranscriptProof({ ...f, afterBytes: -1 }), /INVALID_OWNED/)
 })
 
-test('missing transcript remains unproven and linked transcript is refused', t => {
+test('missing transcript remains unproven and linked transcript is refused', symlinks, t => {
   const f = fixture(t)
   assert.deepEqual(resumedTranscriptProof(f), { matched: false, bytes: 0 })
   const elsewhere = path.join(path.dirname(f.file), 'other')
