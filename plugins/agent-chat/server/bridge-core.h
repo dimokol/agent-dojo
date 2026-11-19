@@ -130,4 +130,25 @@ static char *last_newline(char *data, size_t len) {
   while (len) { if (data[--len] == '\n') return data + len; }
   return NULL;
 }
+// Turns a JSON string body (the text between the quotes) back into plain UTF-8, in place, so a
+// refusal the daemon sent (a JSON.stringify'd {"error":"..."}) prints as a pasteable command.
+static void json_unescape(char *s) {
+  char *out = s;
+  for (char *p = s; *p; p++) {
+    if (*p != '\\' || !p[1]) { *out++ = *p; continue; }
+    char c = *++p;
+    if (c == 'n') *out++ = '\n';
+    else if (c == 't') *out++ = '\t';
+    else if (c == 'r') *out++ = '\r';
+    else if (c == 'u' && p[1] && p[2] && p[3] && p[4]) {
+      unsigned v = (unsigned)strtoul((char[]){p[1], p[2], p[3], p[4], 0}, NULL, 16);
+      p += 4;
+      if (v < 0x80) *out++ = (char)v;
+      else if (v < 0x800) { *out++ = (char)(0xC0 | (v >> 6)); *out++ = (char)(0x80 | (v & 0x3F)); }
+      else { *out++ = (char)(0xE0 | (v >> 12)); *out++ = (char)(0x80 | ((v >> 6) & 0x3F)); *out++ = (char)(0x80 | (v & 0x3F)); }
+    } else *out++ = c;
+  }
+  *out = 0;
+}
+
 #endif

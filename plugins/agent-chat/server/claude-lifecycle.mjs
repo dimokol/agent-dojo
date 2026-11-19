@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { processExecutable, trustedClaudeCommand, runningClaudeVersion, processIdentities } from './native-session.mjs'
-import { fsyncDir, hasModeBits, modeIs, ownedByMe, WINDOWS, windowsProcessRows } from './platform.mjs'
+import { fsyncDir, hasModeBits, modeIs, ownedByMe, WINDOWS, WINDOWS_CLAUDE_ENDPOINT, windowsProcessRows } from './platform.mjs'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const DEFAULT_STATE = path.join(os.homedir(), '.local/state/agent-chat')
@@ -58,7 +58,7 @@ export function validateClaudeLifecycleSocket(endpoint, pid) {
   // 039), not keyed by PID. Agent-chat never connects to it there (Windows wakes through the
   // hook), so only its shape is checked.
   if (WINDOWS) {
-    if (!/^\\\\\.\\pipe\\LOCAL\\cc-msg-[0-9a-f]{32}$/i.test(endpoint)) throw unavailable()
+    if (!WINDOWS_CLAUDE_ENDPOINT.test(endpoint)) throw unavailable()
     return endpoint
   }
   if (!fs.lstatSync(endpoint).isSocket()) throw unavailable()

@@ -35,11 +35,11 @@ export function defaultWakeDir(env = process.env) {
 }
 
 export function ensureWakeDir(dir) {
-  const created = !fs.existsSync(dir)
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  // Windows has no POSIX modes; the folder's ACL keeps it private there.
+  const first = fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // Windows has no POSIX modes; the folder's ACL keeps it private there, locked from the topmost
+  // folder made here.
   if (!WINDOWS) fs.chmodSync(dir, 0o700)
-  else if (!windowsFolderPrivate(dir, { created })) throw new Error(`unsafe wake folder ${dir}`)
+  else if (!windowsFolderPrivate(first ?? dir, { created: first !== undefined })) throw new Error(`unsafe wake folder ${dir}`)
 }
 
 export const armedFile = (dir, pid) => path.join(dir, `armed-${pid}.json`)

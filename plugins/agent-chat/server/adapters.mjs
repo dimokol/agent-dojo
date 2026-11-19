@@ -10,7 +10,7 @@ import { ringClaude, wakeMode, defaultWakeDir } from './wake-ring.mjs'
 import { projectRoot } from './project-scope.mjs'
 import { isVerifiedVersion } from './claude-versions.mjs'
 import { resolveClaudeConversation, claudeLifecycleAncestors, claudeProcessListing, listingLookup, claudeExecutable, CALL_BOUNDS } from './claude-lifecycle.mjs'
-import { hasModeBits } from './platform.mjs'
+import { hasModeBits, WINDOWS, WINDOWS_CLAUDE_ENDPOINT } from './platform.mjs'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NAME = /^[A-Za-z0-9._-]{1,128}$/
@@ -22,6 +22,11 @@ const binaries = Object.freeze({ codex: codexBinary(), claude: (() => {
 })() })
 
 function safePath(value, kind) {
+  // Windows: the endpoint is a named pipe, which has no folder to inspect; only its shape is checked.
+  if (WINDOWS && kind === 'socket') {
+    if (typeof value !== 'string' || !WINDOWS_CLAUDE_ENDPOINT.test(value)) throw new TypeError(`Invalid ${kind} path`)
+    return value
+  }
   if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0') ||
       path.normalize(value) !== value) throw new TypeError(`Invalid ${kind} path`)
   // macOS exposes /tmp as an OS-owned alias for /private/tmp. Canonicalise
@@ -31,7 +36,7 @@ function safePath(value, kind) {
   }
   const uid = process.getuid?.()
   let current = path.parse(value).root
-  const parts = value.slice(current.length).split('/').filter(Boolean)
+  const parts = value.slice(current.length).split(WINDOWS ? /[\\/]/ : '/').filter(Boolean)
   for (let index = 0; index < parts.length; index++) {
     current = path.join(current, parts[index])
     let stat

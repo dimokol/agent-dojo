@@ -20,6 +20,10 @@ export function fsyncDir(dir) {
   try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
 }
 
+// Claude's messaging endpoint on Windows, one per claude.exe (relay 039). Agent-chat never
+// connects to it there (Windows wakes through the hook), so only its shape is checked.
+export const WINDOWS_CLAUDE_ENDPOINT = /^\\\\\.\\pipe\\LOCAL\\cc-msg-[0-9a-f]{32}$/i
+
 export const WIN_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'agent-chat-win.exe')
 
 // Folders whose ACL passed in this process; anything below them inherits it.

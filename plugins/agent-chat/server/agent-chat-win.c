@@ -417,6 +417,7 @@ static HANDLE open_daemon(int wait_ms) {
         if (strncmp(reply, "{\"error\":", 9) == 0) {
           char *text = reply + 10, *end = strrchr(text, '"');
           if (end) *end = 0;
+          json_unescape(text);
           fprintf(stderr, "%s\n", text);
           exit(1);
         }

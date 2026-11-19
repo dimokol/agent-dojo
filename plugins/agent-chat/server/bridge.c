@@ -138,9 +138,10 @@ static int open_daemon(int wait_ms) {
         if (got && strncmp(reply, "{\"ok\":true}", 11) == 0) return fd;
         close(fd);
         if (strncmp(reply, "{\"error\":", 9) == 0) {
-          // The daemon's text is plain JSON from JSON.stringify; print it unescaped enough to read.
+          // The daemon's text is JSON from JSON.stringify; print it as plain text.
           char *text = reply + 10, *end = strrchr(text, '"');
           if (end) *end = 0;
+          json_unescape(text);
           fprintf(stderr, "%s\n", text);
           exit(1);
         }

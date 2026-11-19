@@ -77,12 +77,14 @@ export function migrateProjectState(root, projectRoot, stateRoot) {
   try { fs.renameSync(path.join(projects, given), path.join(projects, canonical)) } catch { /* None to move, or another session moved it. */ }
 }
 export function ensureDirectory(dir, mode = 0o700) {
-  const created = !fs.existsSync(dir)
-  if (created) fs.mkdirSync(dir, { recursive: true, mode })
+  // mkdirSync returns the first folder it made: every parent made here is ours too.
+  const first = fs.existsSync(dir) ? undefined : fs.mkdirSync(dir, { recursive: true, mode })
+  const created = first !== undefined
   const stat = fs.lstatSync(dir)
   if (!stat.isDirectory() || stat.isSymbolicLink() || !ownedByMe(stat) || hasModeBits(stat, 0o077)) throw Object.assign(new Error('unsafe directory ownership or permissions'), { path: dir })
-  // Windows: the ACL is the privacy check. A folder made here is locked to this user first.
-  if (WINDOWS && !windowsFolderPrivate(dir, { created })) throw Object.assign(new Error('unsafe directory ownership or permissions'), { path: dir })
+  // Windows: the ACL is the privacy check. A folder made here is locked to this user first, from
+  // the topmost one made, so a parent made on the way doesn't keep its loose inherited ACL.
+  if (WINDOWS && !windowsFolderPrivate(created ? first : dir, { created })) throw Object.assign(new Error('unsafe directory ownership or permissions'), { path: dir })
   if (created) fsyncDir(path.dirname(dir))
 }
 export function safeFile(file) {

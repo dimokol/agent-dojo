@@ -70,9 +70,9 @@ function confirmPeer({ pid, ppid }) {
 }
 
 function privateFolder(directory) {
-  const created = !fs.existsSync(directory)
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-  if (WINDOWS && !windowsFolderPrivate(directory, { created })) throw new Error(`unsafe daemon folder ${directory}`)
+  // The first folder made: on Windows the lock starts there, so a parent made on the way is private too.
+  const first = fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+  if (WINDOWS && !windowsFolderPrivate(first ?? directory, { created: first !== undefined })) throw new Error(`unsafe daemon folder ${directory}`)
   const stat = fs.lstatSync(directory)
   if (!stat.isDirectory() || !ownedByMe(stat) || hasModeBits(stat, 0o077)) throw new Error(`unsafe daemon folder ${directory}`)
 }
