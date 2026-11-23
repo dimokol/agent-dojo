@@ -93,7 +93,11 @@ eq "tool call started the server" 2 "$(starts)"
 kill -9 "$PARENT_PID"; wait "$PARENT_PID" 2>/dev/null
 for _ in $(seq 60); do kill -0 "$(cat "$WORK/shim.pid")" 2>/dev/null || break; sleep 0.1; done
 eq "shim exited after its parent died" gone "$(kill -0 "$(cat "$WORK/shim.pid")" 2>/dev/null && echo alive || echo gone)"
-eq "server stopped with it" 0 "$(pgrep -f "$HERE/fake-server.mjs" | wc -l | tr -d ' ')"
+if command -v pgrep >/dev/null 2>&1; then
+  eq "server stopped with it" 0 "$(pgrep -f "$HERE/fake-server.mjs" | wc -l | tr -d ' ')"
+else
+  echo "  skip  server stopped with it (no pgrep; on Windows check Get-CimInstance by hand)"
+fi
 exec 7>&-
 
 echo "$pass passed, $fail failed"

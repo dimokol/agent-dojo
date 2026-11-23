@@ -58,4 +58,8 @@ else
   echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"$CMD\", \"padding\": 0, \"refreshInterval\": 10 }"
 fi
 CFG=${SHARED_STATUSLINE_CONFIG:-$HOME/.config/shared-statusline/config.json}
-[ -f "$CFG" ] || echo "Optional layout: copy $HERE/examples/full.json to $CFG"
+if [ ! -f "$CFG" ]; then
+  SRC=$HERE/examples/full.json; TO=$CFG
+  command -v cygpath >/dev/null 2>&1 && { SRC=$(cygpath -m "$SRC"); TO=$(cygpath -m "$CFG"); }
+  echo "Optional layout: copy $SRC to $TO"
+fi

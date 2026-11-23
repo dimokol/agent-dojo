@@ -6,6 +6,8 @@ SRC=$HERE/../statusline
 command -v node >/dev/null && command -v curl >/dev/null || { echo "  skip  (needs node and curl)"; exit 0; }
 WORK=$(mktemp -d)
 : "${WORK:?mktemp failed}"
+# Git Bash: node is native and only understands C:/... paths, so use that form throughout.
+command -v cygpath >/dev/null 2>&1 && WORK=$(cygpath -m "$WORK")
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "  ok    $1"; }
 bad() { fail=$((fail+1)); echo "  FAIL  $1 (got: $2)"; }
@@ -32,7 +34,7 @@ render() { printf '%s' "$INPUT" | sh "$WORK/bin/client.sh"; }
 
 echo "== first render starts the server"
 out=$(render)
-case $out in *starting*|*"Test Model"*) ok "first render: placeholder, or the reply after one retry" ;; *) bad "first render" "$out" ;; esac
+case $out in *starting*|*"Test Model"*) ok "first render: placeholder (or the reply, if a server was already up)" ;; *) bad "first render" "$out" ;; esac
 i=0; while ! up && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
 i=0; while [ ! -f "$WORK/s/server.pid" ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done
 out=$(render)
@@ -87,10 +89,15 @@ has "total counts each message id once" "T | 2.0k" "$out"
 rm -f "$WORK/config.json"
 
 echo "== shutdown removes server.pid"
-pid=$(cat "$WORK/s/server.pid")
-kill -TERM "$pid"; i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
-[ -f "$WORK/s/server.pid" ] && bad "pid file removed" "still there" || ok "pid file removed"
-up && bad "socket or endpoint removed" "still there" || ok "socket or endpoint removed"
+if command -v taskkill >/dev/null 2>&1; then
+  # Git Bash can't send SIGTERM to a native process, and taskkill /F runs no handler.
+  echo "  skip  pid file and endpoint removal (no SIGTERM to native node on Windows)"
+else
+  pid=$(cat "$WORK/s/server.pid")
+  kill -TERM "$pid"; i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+  [ -f "$WORK/s/server.pid" ] && bad "pid file removed" "still there" || ok "pid file removed"
+  up && bad "socket or endpoint removed" "still there" || ok "socket or endpoint removed"
+fi
 
 echo "== a server that can't start says so"
 printf '#!/bin/sh\nexit 1\n' >"$WORK/badnode"; chmod +x "$WORK/badnode"
@@ -102,7 +109,8 @@ has "second failed start: names the log" "server failed, see $B/server.log" "$o2
 
 echo "== load log: top and groups"
 out=$(node --input-type=module -e "
-  const { summarize } = await import('$WORK/bin/server.mjs')
+  const { pathToFileURL } = await import('node:url')
+  const { summarize } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
   const r = summarize([
     ' 50.0 204800 /Users/x/.local/share/claude/versions/2.1.0 --resume',
     ' 10.0 102400 node /p/node_modules/vitest/vitest.mjs run',

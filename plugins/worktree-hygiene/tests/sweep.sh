@@ -3,6 +3,12 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 SWEEP=$HERE/../scripts/worktree-sweep.sh
 WORK=$(mktemp -d); : "${WORK:?}"; WORK=$(cd "$WORK" && pwd -P)
+# Git Bash: native git prints C:/... paths, so use that form here too, and run the POSIX cases as
+# Linux (the real Windows behaviour, keep everything, has its own case below).
+if command -v cygpath >/dev/null 2>&1; then
+  WORK=$(cygpath -m "$WORK")
+  case $(uname -s) in MINGW*|MSYS*|CYGWIN*) export WORKTREE_SWEEP_UNAME=Linux ;; esac
+fi
 SLEEPER=""
 trap '[ -n "$SLEEPER" ] && kill $SLEEPER 2>/dev/null; rm -rf "${WORK:?}"' EXIT
 export HOME=$WORK/home XDG_CACHE_HOME=$WORK/cache WORKTREE_SWEEP_LOG=$WORK/sweep.log WORKTREE_SWEEP_IDLE_MIN=0
