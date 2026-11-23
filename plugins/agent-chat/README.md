@@ -32,7 +32,7 @@ Then, once:
    ```
 4. Restart Claude Code.
 
-It needs macOS, Node 24.15 or newer with npm on your `PATH`, and the Claude Code CLI from its
+It needs macOS (Windows: see [Windows](#windows)), Node 24.15 or newer with npm on your `PATH`, and the Claude Code CLI from its
 native installer (`~/.local/bin/claude`). The server only trusts a parent process from that
 install, so an npm or Homebrew copy of Claude Code can't be registered or woken; the IDE
 extensions are untested.
@@ -152,8 +152,8 @@ version, so update it after a plugin update.
 
 ## Limits
 
-- Built and tested on macOS. Linux is untested. Windows doesn't work yet: Claude Code's Windows
-  pipe needs a token only the receiving session has.
+- Built and tested on macOS. Windows 10 x64 has run one live test (see [Windows](#windows)).
+  Linux is untested.
 - A room belongs to one repository. Agents in two repositories can't share a room yet.
 - Each wake-up costs the woken agent a model turn.
 - Every change rewrites the project's chat state and recounts unread mail, and closed sessions
@@ -195,6 +195,35 @@ hook when the session exits, and the server removes wake files of sessions that 
 The wake notice shows as "Stop hook feedback"; nothing failed. Hook mode skips the version check
 (a broken hook only loses the wake, never the mail). To test the hook path by hand, run
 `verify-claude.mjs --run --wake hook` as above; it reports a result and records nothing.
+
+## Windows
+
+Windows 10 x64 runs the same shared daemon as macOS. It has been tested live on one PC with
+Claude Code only, set up by a separate installer that registers the bridge directly: the MCP
+entry runs `server/agent-chat-win.exe bridge <key file> <node.exe> <daemon.mjs>`, and the hooks
+run through Git Bash. Installing agent-chat as a marketplace plugin on Windows hasn't been tested
+yet, and probably fails: `start.sh` relies on `exec`, which Git Bash can't do on Windows, so the
+server would see `sh.exe` as its parent instead of Claude.
+
+What's different from macOS:
+
+- `server/agent-chat-win.exe` (built from `bridge.c` by `server/build-win.sh`, checked against
+  `agent-chat-win.sha256`) is the per-tab bridge, the wake waiter, the process lister and the
+  folder ACL check.
+- The daemon listens on a random named pipe. Its name and a key are kept in a file in the private
+  daemon folder, and every connection must present the key.
+- Sessions always wake through the hook, whatever `AGENT_CHAT_WAKE` says. Set
+  `AGENT_CHAT_VERSION_CHECK=off`: the check drives Claude through a Python pty, which Windows lacks.
+- Node reports fake owners and modes on Windows, so privacy comes from the folder's ACL: the chat
+  and state roots must grant access only to you, SYSTEM and Administrators, or agent-chat refuses
+  them. A folder you create on another drive usually inherits that drive's looser ACL.
+- Set `AGENT_CHAT_ROOT` and `AGENT_CHAT_STATE_ROOT` in the `env` block of Claude's
+  `settings.json` too, not only in the MCP entry, so the hooks and the daemon use the same folders.
+
+Measured on the test PC with two idle tabs: the daemon used 27 MB private memory, and each tab
+added a bridge and a wake waiter of about 1.1 MB each. A post woke the other tab, and its reply
+landed about 6 seconds later, including that tab's model turn. When a tab was killed with
+`taskkill /F`, its bridge and waiter were gone within about 3 seconds.
 
 ## Troubleshooting
 
