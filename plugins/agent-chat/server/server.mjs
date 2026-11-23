@@ -19,6 +19,7 @@ import { readNativeLabel } from './notices.mjs'
 import { isVerifiedVersion, sessionClaudeVersion, versionCheckOff } from './claude-versions.mjs'
 import { shownInInbox, transcriptOf } from './transcript-receipts.mjs'
 import { clearRing, defaultWakeDir, sweepWakeFiles, wakeMode } from './wake-ring.mjs'
+import { syncFor } from './sync.mjs'
 export { projectRoot } from './project-scope.mjs'
 const { createStore, defaultChatRoot } = await import('./store.mjs')
 const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
@@ -31,7 +32,7 @@ const { identifier, unsafeFolderLine } = await import('./store-files.mjs')
 // setting too: it turns the check off (claude-versions.mjs).
 const versionEnv = env => env.AGENT_CHAT_VERSION_CHECK !== undefined || env.AGENT_CHAT_WAKE !== undefined ? env : process.env
 export const ownProcess = () => ({ pid: process.pid, ppid: process.ppid, cwd: process.cwd() })
-export function createService({ store, proc = ownProcess(), adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, lifecycleStart=resolveClaudeLifecycleStart, isLive=isProcessLive,
+export function createService({ store, sync = null, proc = ownProcess(), adapters = createAdapters(), env = process.env, inferSession=inferNativeSession, resolveConversation=resolveClaudeConversation, lifecycleStart=resolveClaudeLifecycleStart, isLive=isProcessLive,
   observeLifecycle=observeClaudeLifecycle, currentConversation=currentClaudeConversation, reconcileEveryMs=10_000,
   // With the check off every version passes, so the version is never looked up: for a prerelease
   // tab that lookup throws, which would show a wakeable tab as not wakeable.
@@ -89,6 +90,38 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
   // held row explains itself; a rung or queued one is covered by the post's note.
   const deliveryView = rows => rows.map(({ agent, state, reason, detail }) => ({ agent, state, ...(state === 'held' ? { reason, ...(detail ? { detail } : {}) } : {}) }))
   const senderNote = 'End your turn; a reply wakes you.'
+  // Shared rooms (synced through the hub). Errors here carry fixed texts the caller can act on.
+  const sharedError = text => Object.assign(new Error(text), { code: 'CHAT_SHARED' })
+  const hubDown = error => sharedError(`The agent-chat hub is unreachable or refused (${String(error?.message ?? error).slice(0, 120)}). Local rooms still work, and posts to shared rooms wait in this machine's outbox.`)
+  const sharedProject = async () => {
+    if (!sync) throw sharedError('Shared rooms need this machine paired with an agent-chat hub (node device.mjs pair <invite code>) and the agent-chat daemon.')
+    const project = await sync.addProject(store.projectRoot, store)
+    if (!project) throw sharedError("This project has no git origin (or projects.json override), so its rooms can't be shared across devices.")
+    return project
+  }
+  // A name joined in a shared room is held on the hub for this device; another device's session
+  // already holding it means this join is undone. With the hub down the join is refused too.
+  const holdSharedName = async (room, member) => {
+    const shared = member && store.sharedRoom(room)
+    if (!shared) return
+    try {
+      const project = await sharedProject()
+      await sync.reserve(project, room, { alias: member.agent, participant: String(member.participant_id ?? ''), joined: true, runtime: member.session?.runtime ?? '' })
+    } catch (error) {
+      try { store.leave({ room, agent: member.agent, sessionId: member.session.id, participantId: member.participant_id }) } catch {}
+      for (const [bindingKey, value] of [...bindings]) if (JSON.parse(bindingKey)[0] === room && value.participantId === member.participant_id) bindings.delete(bindingKey)
+      if (error.code === 'CHAT_SHARED') throw error
+      if (error.status === 409) throw sharedError(`The name ${member.agent} is held in shared room ${room} by a session on ${error.body?.holder ?? 'another device'}; join under another name.`)
+      throw hubDown(error)
+    }
+  }
+  // Rows for sessions on other devices: the sender's outlook from that device's last poll.
+  const remoteRows = (room, to) => {
+    if (!store.sharedRoom(room)) return []
+    const remote = store.remoteMembers(room)
+    const targets = isBroadcast(to) ? remote.filter(row => row.joined) : remote.filter(row => row.alias.toLowerCase() === String(to).toLowerCase())
+    return targets.map(row => ({ agent: row.alias, device: row.device_name, ...(sync ? sync.outlook(row.device) : { state: 'queued', detail: 'in the outbox; this machine syncs only while the agent-chat daemon runs' }) }))
+  }
   // A ps of every member on every call was the costliest part of a call, so a pass runs at most
   // once per reconcileEveryMs. A Claude member restored at tab start or joined by its first post
   // has no server PID yet; its tab's PID decides, or closed tabs stayed joined for good.
@@ -402,7 +435,9 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
     const mine = participantId(nativeSession)
     if (store.memberships().some(member => member.room === room && (member.participant_id === mine || member.agent === agent))) return
     await checkCodexProfile()
-    bind(room, joinCreating({ room, agent: defaultName(nativeSession, agent), session: nativeSession }, room), agent)
+    const member = joinCreating({ room, agent: defaultName(nativeSession, agent), session: nativeSession }, room)
+    bind(room, member, agent)
+    await holdSharedName(room, member)
   }
   // Who is dismissing: a native session is its own identity; a manual client is known only by
   // what this connection joined, preferring the alias it named.
@@ -529,7 +564,18 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
         return { ...result, delivery: [{ state: 'held', reason: 'state_damaged', detail: error.message }] }
       }
       switch (name) {
-        case 'create_room': return store.createRoom(args)
+        case 'create_room': {
+          if (args.shared !== undefined && typeof args.shared !== 'boolean') throw new Error('invalid shared; true or false')
+          const { shared, ...plain } = args
+          if (!shared) return store.createRoom(plain)
+          if (typeof plain.title !== 'string' || !plain.title.trim() || plain.title.length > 200) throw new Error('title must contain 1 to 200 characters')
+          const room = store.roomIdFor(plain)
+          if (store.listRooms().some(row => row.room?.toLowerCase() === room.toLowerCase())) throw new Error('room already exists')
+          const project = await sharedProject()
+          try { await sync.createRoom(project, room, plain.title.trim()) }
+          catch (error) { if (error.status === 409) throw sharedError(`A shared room named ${room} already exists in this project; join it instead.`); throw hubDown(error) }
+          return { room, title: plain.title.trim(), shared: true }
+        }
         case 'list_rooms': return store.listRooms()
         // A busy room's default 200 messages ran to about 50k tokens in one call.
         case 'history': return store.history({ limit: 20, ...args }).map(record => ({ ...messageView(record), cursor: record.cursor }))
@@ -545,6 +591,7 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
           await checkCodexProfile()
           const { member, naming } = chosenJoin({ ...args, session: boundSession }, boundSession, args.agent, nativeSession ? args.room : undefined)
           bind(args.room, member, args.agent)
+          await holdSharedName(args.room, member)
           const delivery = await controller.dispatch(args.room)
           return { room: args.room, agent: member.agent, ...naming, participant_id:member.participant_id, owner_since:member.owner_since, after_cursor: member.after_cursor, delivery: deliveryView(delivery) }
         }
@@ -580,6 +627,7 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
             if (holds.includes('unknown')) throw new Error('Native Claude session check timed out; retry')
             const joined = chosenJoin({ room: args.room }, nativeSession, args.from, args.title || args.room)
             bind(args.room, joined.member, args.from)
+            await holdSharedName(args.room, joined.member)
             // The post result's note belongs to delivery, so the naming note has its own key.
             naming = { ...(joined.naming.requested ? { requested: joined.naming.requested } : {}), ...(joined.naming.note ? { name_note: joined.naming.note } : {}) }
           }
@@ -597,7 +645,9 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
             const renamed = current.toLowerCase() !== to.toLowerCase()
             if (renamed) for (const row of delivery) if (row.agent?.toLowerCase() === current.toLowerCase()) row.note = `sent to ${row.agent} (renamed from ${to})`
             // A held row names the owner's current name too, with the same note.
-            if (!isBroadcast(to) && !delivery.some(row => row.agent?.toLowerCase() === current.toLowerCase()) &&
+            const remote = remoteRows(args.room, to)
+            delivery.push(...remote)
+            if (!isBroadcast(to) && !remote.length && !delivery.some(row => row.agent?.toLowerCase() === current.toLowerCase()) &&
                 !store.members({ room: args.room }).some(member => member.agent.toLowerCase() === current.toLowerCase()))
               delivery.push({ ...(store.absentReason({ room: args.room, name: to }) === 'closed'
                 ? { agent: current, state: 'held', reason: 'closed', detail: 'Its tab closed; the mail waits until that name is back in this room.' }
@@ -640,7 +690,13 @@ export function createService({ store, proc = ownProcess(), adapters = createAda
             }
             return rows
           }
-        case 'members': return memberReport(args.room)
+        case 'members': {
+          const rows = await memberReport(args.room)
+          if (!store.sharedRoom(args.room)) return rows
+          const here = sync?.device?.name ?? 'this machine'
+          return [...rows.map(row => ({ ...row, device: here })), ...store.remoteMembers(args.room).map(row => ({ name: row.alias, device: row.device_name, runtime: row.runtime,
+            joined: row.joined, status: row.joined ? 'joined' : 'closed', wakeable: row.joined && sync?.outlook(row.device).state === 'sent' }))]
+        }
         case 'unread': return store.unreadReport()
         // No membership needed and none made: the dismissal records the caller's session identity.
         case 'dismiss': return store.dismiss({ room: args.room, agent: args.agent, participantId: dismisser(args.agent), recipient: args.recipient, message_ids: args.message_ids })
@@ -711,7 +767,7 @@ function sweepWakeFilesSoon(env) {
 }
 // One tab's connection: its store and service, set up from the tab's environment and folder.
 // Errors here are start-up failures; startupErrorText says what the user can do about them.
-export async function openConnection({ env = process.env, proc = ownProcess(), scopeOf = projectRoot } = {}) {
+export async function openConnection({ env = process.env, proc = ownProcess(), scopeOf = projectRoot, withSync = false } = {}) {
   if (env.AGENT_CHAT_DIR || env.AGENT_CHAT_PROJECT) throw new Error('Candidate supports inferred projects only; explicit legacy overrides need migration review')
   const root = env.AGENT_CHAT_ROOT || defaultChatRoot()
   // A git that times out must not bind this tab to the wrong project for its whole life: retry
@@ -723,9 +779,14 @@ export async function openConnection({ env = process.env, proc = ownProcess(), s
   const adapters = createAdapters({ stateRoot: store.stateRoot, verifiedClaudeVersion: (version, options) => isVerifiedVersion(version, { ...options, env: versionEnv(env) }),
     wake: wakeMode(env), wakeDir: defaultWakeDir(env) })
   if (wakeMode(env) === 'hook') sweepWakeFilesSoon(env)
-  return { store, service: createService({ store, env, proc, adapters }) }
+  // Only the shared daemon syncs with a hub (one engine per state root, behind the sync lock).
+  // Without a pairing there is no engine and nothing leaves the machine.
+  let sync = null
+  if (withSync) try { sync = syncFor({ stateRoot: store.stateRoot, chatRoot: root }) } catch {}
+  sync?.addProject(store.projectRoot, store).catch(() => {})
+  return { store, service: createService({ store, sync, env, proc, adapters }) }
 }
-export const openDaemonConnection = options => openConnection({ ...options, scopeOf: projectRootAsync })
+export const openDaemonConnection = options => openConnection({ ...options, scopeOf: projectRootAsync, withSync: true })
 export function startupErrorText(error, env = process.env) {
   const legacy = ['AGENT_CHAT_PROJECT', 'AGENT_CHAT_DIR'].filter(name => env[name])
   // An unsafe folder is named: it's the user's own path, and they can fix it.
@@ -763,7 +824,7 @@ export function serveConnection({ store, service, lines, write }) {
       // record or stack can reach the client through them.
       const allowed = ALLOWED_ERROR
       // A loose room names itself, its folder and the chmod that fixes it: the user's own path.
-      const message = error.code === 'CHAT_STATE_DAMAGED' ? 'Agent-chat delivery state is damaged; operator recovery required' : error.code === 'CHAT_ROOM_UNSAFE' ? error.message : !error.code && allowed.test(error.message) ? error.message : transientError(error) ? BUSY : FAILED
+      const message = error.code === 'CHAT_STATE_DAMAGED' ? 'Agent-chat delivery state is damaged; operator recovery required' : error.code === 'CHAT_ROOM_UNSAFE' || error.code === 'CHAT_SHARED' ? error.message : !error.code && allowed.test(error.message) ? error.message : transientError(error) ? BUSY : FAILED
       if (message === FAILED || message === BUSY) logWithheld(store.stateRoot, params?.name, error)
       send(id, { isError: true, content: [{ type: 'text', text: message }] })
     }

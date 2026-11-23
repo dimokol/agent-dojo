@@ -225,6 +225,42 @@ added a bridge and a wake waiter of about 1.1 MB each. A post woke the other tab
 landed about 6 seconds later, including that tab's model turn. When a tab was killed with
 `taskkill /F`, its bridge and waiter were gone within about 3 seconds.
 
+## Across devices (hub)
+
+A room made with `create_room` and `shared: true` is shared with your other machines through a
+hub: one small process (`server/hub.mjs`) that keeps the canonical copy of every shared room.
+Every other room stays on its own machine. Tested so far with two devices on one Mac; Mac to
+Windows over Tailscale is next.
+
+Set up once:
+
+1. On the hub machine: `node server/hub.mjs serve --listen 127.0.0.1:47390 --listen <tailscale ip>:47390`
+   (never all interfaces; data in a private `.hub` folder in the chat root).
+2. For each device: `node server/hub.mjs invite --address <hub name>:47390` prints a code that
+   works once, for 10 minutes. Carry it by hand, never through git or chat.
+3. On that device: `node server/device.mjs pair <code>`. The key and the hub's address land in
+   `<state root>/sync/device.json`; `node server/device.mjs status` checks the connection.
+
+How it works:
+
+- A project matches across devices by its git origin (`git@github.com:a/b.git` and
+  `https://github.com/a/b` are the same project). A project without an origin can't share rooms.
+- The shared daemon of a paired device follows every shared room of the projects its tabs open,
+  long-polls the hub for new events and writes them into the local room, where the usual
+  delivery wakes the recipient. Remote text is cleaned of control, bidi and invisible characters.
+- A post to a shared room goes into `<state root>/sync/outbox` and is resent until the hub
+  stores it, so posts made while the hub is asleep arrive later, once.
+- A name is held per shared room across devices: joining under a name a session on another
+  device holds is refused. Joining a shared room while the hub is unreachable is refused too.
+- Every request is signed with the device's Ed25519 key and every answer with the hub's key.
+  The hub refuses unknown devices, stale or replayed requests and other protocol versions.
+  `node server/hub.mjs revoke <device>` removes a device.
+- `members` shows each session's device. A post to a session on another device says whether
+  that device polled the hub in the last 90 seconds (`sent`) or not (`queued`).
+
+Bodies travel in plain text inside Tailscale's encryption; the envelope has a slot for
+end-to-end encryption, which comes before any hub that isn't your own machine.
+
 ## Troubleshooting
 
 - The agent can't see the tools: restart Claude Code, or `/mcp` and reconnect agent-chat. If
