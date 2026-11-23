@@ -5,8 +5,9 @@
 # A worktree is removed only when ALL of these hold:
 #   - git status is empty (no changes, no untracked files)
 #   - HEAD is reachable from a remote branch after a successful fetch (pushed or merged)
-#   - no process has its working directory inside it (lsof, or /proc on Linux; Windows has
-#     neither, and there a process holding files open makes the removal fail instead)
+#   - no process has its working directory inside it (lsof, or /proc on Linux). Where that can't
+#     be checked, every worktree is kept. That includes Windows: Git Bash's /proc shows only msys
+#     processes, and claude.exe, node and VS Code aren't among them.
 #   - nothing outside node_modules changed for IDLE minutes (protects a worktree a session just
 #     made and drives by absolute paths)
 #   - every ignored file is a rebuildable artifact or also exists in the main checkout (env
@@ -46,7 +47,8 @@ INTERVAL_MIN=${WORKTREE_SWEEP_INTERVAL_MIN:-60}
 case $IDLE_MIN in ''|*[!0-9]*) IDLE_MIN=120 ;; esac
 case $INTERVAL_MIN in ''|*[!0-9]*) INTERVAL_MIN=60 ;; esac
 
-case "$(uname -s 2>/dev/null)" in
+OS=${WORKTREE_SWEEP_UNAME:-$(uname -s 2>/dev/null)} # WORKTREE_SWEEP_UNAME: tests only
+case "$OS" in
   Darwin) LOGDIR="$HOME/Library/Logs" ;;
   MINGW*|MSYS*|CYGWIN*) LOGDIR="${LOCALAPPDATA:-$HOME/AppData/Local}/worktree-sweep" ;;
   Linux) LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/worktree-sweep" ;;
@@ -98,14 +100,22 @@ act() { if [ $DRY = 1 ]; then log "DRY $*"; else log "DO  $*"; "$@" >>"$LOG" 2>&
 # Ignored paths that a build or install recreates.
 REBUILDABLE='(^|/)(node_modules|\.next|\.expo|dist|build|\.turbo|coverage|\.husky/_|\.vercel|__pycache__|\.venv|target)(/|$)|\.tsbuildinfo$|(next|expo)-env\.d\.ts$|\.DS_Store$'
 
-# Working directories of running processes, one per line.
-if command -v lsof >/dev/null 2>&1; then
-  cwds=$(lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
-elif [ -d /proc/self/cwd ] || [ -L /proc/self/cwd ]; then
-  cwds=$(for p in /proc/[0-9]*; do readlink "$p/cwd" 2>/dev/null; done)
-else
-  cwds=""
-fi
+# Paths in one form, so git's (C:/x on Windows) and /proc's (/c/x) compare equal.
+if command -v cygpath >/dev/null 2>&1; then norm() { cygpath -m -f - 2>/dev/null; }; else norm() { cat; }; fi
+
+# Working directories of running processes, one per line. BUSY_CHECK=0 when they can't be known.
+BUSY_CHECK=1
+case "$OS" in
+  MINGW*|MSYS*|CYGWIN*) BUSY_CHECK=0; cwds="" ;;
+  *)
+    if command -v lsof >/dev/null 2>&1; then
+      cwds=$(lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | norm)
+    elif [ -d /proc/self/cwd ] || [ -L /proc/self/cwd ]; then
+      cwds=$(for p in /proc/[0-9]*; do readlink "$p/cwd" 2>/dev/null; done | norm)
+    else
+      BUSY_CHECK=0; cwds=""
+    fi ;;
+esac
 
 on_remote() { [ -n "$(git -C "$1" branch -r --contains "$2" 2>/dev/null | head -1)" ]; }
 
@@ -128,18 +138,20 @@ ignored_ok() { # $1 worktree, $2 main checkout
 }
 
 sweep_repo() {
-  local main=$1 wt head why trunk checked_out br
+  local main=$1 wt wtn head why trunk checked_out br
   git -C "$main" remote get-url origin >/dev/null 2>&1 || return
   git -C "$main" fetch --prune --quiet origin 2>/dev/null || { log "skip $main: fetch failed"; return; }
   while IFS= read -r wt; do
     [ "$wt" = "$main" ] && continue
     [ -d "$wt" ] || { act git -C "$main" worktree prune; continue; }
     why=""
+    [ $BUSY_CHECK = 0 ] && why="busy check unavailable on $OS"
+    wtn=$(printf '%s\n' "$wt" | norm)
     [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | head -1)" ] && why="uncommitted changes"
     head=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
     [ -z "$why" ] && ! on_remote "$main" "$head" && why="HEAD not on a remote"
-    [ -z "$why" ] && [ -n "$cwds" ] && grep -qxF "$wt" <<<"$cwds" && why="process inside"
-    [ -z "$why" ] && [ -n "$cwds" ] && grep -qF "$wt/" <<<"$cwds" && why="process inside"
+    [ -z "$why" ] && [ -n "$cwds" ] && grep -qxF "$wtn" <<<"$cwds" && why="process inside"
+    [ -z "$why" ] && [ -n "$cwds" ] && grep -qF "$wtn/" <<<"$cwds" && why="process inside"
     [ -z "$why" ] && recently_touched "$wt" && why="touched in the last $IDLE_MIN min"
     [ -z "$why" ] && why=$(ignored_ok "$wt" "$main")
     if [ -n "$why" ]; then log "keep $wt ($why)"; continue; fi

@@ -13,6 +13,12 @@
 //
 // Config: $SHARED_STATUSLINE_CONFIG, else ~/.config/shared-statusline/config.json. Reread on change.
 // Without one, a short default layout is used. examples/ has full ones.
+//
+// Per tab: the server serves tabs of several Claude config dirs (~/.claude-dimo, ~/.claude-2), so
+// what differs per tab comes with each request, not from the server's own env: X-Config-Dir, and
+// X-Env with the tab's AGENT_CHAT_ROOT, AGENT_CHAT_STATE_ROOT and pressure thresholds
+// (CLAUDE_PLUGIN_OPTION_* / MACHINE_PRESSURE_*). NO_COLOR, the config file and the load log are
+// machine-wide: they come from the env of whichever tab started the server.
 import fs from 'node:fs'
 import net from 'node:net'
 import http from 'node:http'
@@ -67,6 +73,18 @@ const paint = (color, text) => {
   return code === null || process.env.NO_COLOR ? text : `\x1b[38;5;${code}m${text}\x1b[39m`
 }
 
+// ---------- per-tab env ----------
+const FORWARDED = /^(AGENT_CHAT_ROOT|AGENT_CHAT_STATE_ROOT|(CLAUDE_PLUGIN_OPTION|MACHINE_PRESSURE)_[A-Z0-9_]+)$/
+const BASE_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !FORWARDED.test(k)))
+// X-Env is "K=V&K=V" (URL-encoded); only FORWARDED names are taken.
+export function requestEnv(header, configDir = '') {
+  const env = { ...BASE_ENV }
+  for (const [k, v] of new URLSearchParams(String(header || ''))) if (FORWARDED.test(k)) env[k] = v
+  if (configDir) env.CLAUDE_CONFIG_DIR = configDir
+  else delete env.CLAUDE_CONFIG_DIR
+  return env
+}
+
 // ---------- formatting ----------
 export function formatTokens(n) {
   if (n >= 1e6 - 50) return `${(n / 1e6).toFixed(1)}M`
@@ -82,39 +100,52 @@ export function formatDuration(ms) {
 }
 
 // ---------- session token total: each transcript is read incrementally, never twice ----------
-const transcripts = new Map() // path -> { offset, rest, byId, anon, seen }
+// Reads happen in the background, 4 MB at a time, and a render shows the total read so far: a long
+// transcript seen for the first time must not hold a render past the client's 2 s limit.
+const transcripts = new Map() // path -> { offset, rest, byId, anon, seen, reading, total }
+const CHUNK = 4 * 2 ** 20
 function transcriptTotal(file) {
   if (!file) return null
-  let st
-  try { st = fs.statSync(file) } catch { return null }
   let t = transcripts.get(file)
-  if (!t || st.size < t.offset) { t = { offset: 0, rest: '', byId: new Map(), anon: 0 }; transcripts.set(file, t) }
+  if (!t) { t = { offset: 0, rest: '', byId: new Map(), anon: 0, total: null, reading: false }; transcripts.set(file, t) }
   t.seen = Date.now()
-  if (st.size > t.offset) {
-    const fd = fs.openSync(file, 'r')
-    const buf = Buffer.alloc(st.size - t.offset)
-    fs.readSync(fd, buf, 0, buf.length, t.offset)
-    fs.closeSync(fd)
-    t.offset = st.size
-    const lines = (t.rest + buf.toString('utf8')).split('\n')
-    t.rest = lines.pop()
-    for (const line of lines) {
-      if (!line.includes('"usage"')) continue
-      let msg
-      try { msg = JSON.parse(line)?.message } catch { continue }
-      const u = msg?.usage
-      if (!u) continue
-      const v = { inp: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), out: u.output_tokens || 0 }
-      // Streaming writes one message several times; count each id once, with its largest output.
-      if (typeof msg.id === 'string' && msg.id) {
-        const prev = t.byId.get(msg.id)
-        t.byId.set(msg.id, prev ? { inp: prev.inp, out: Math.max(prev.out, v.out) } : v)
-      } else t.anon += v.inp + v.out
+  if (!t.reading) { t.reading = true; readTranscript(file, t).finally(() => { t.reading = false }) }
+  return t.total
+}
+async function readTranscript(file, t) {
+  let fh
+  try {
+    fh = await fs.promises.open(file, 'r')
+    let size = (await fh.stat()).size
+    if (size < t.offset) Object.assign(t, { offset: 0, rest: '', byId: new Map(), anon: 0 }) // rewritten
+    while (size > t.offset) {
+      const buf = Buffer.alloc(Math.min(CHUNK, size - t.offset))
+      const { bytesRead } = await fh.read(buf, 0, buf.length, t.offset)
+      if (!bytesRead) break
+      t.offset += bytesRead
+      addLines(t, buf.subarray(0, bytesRead).toString('utf8'))
     }
-  }
+  } catch { return } finally { await fh?.close() }
   let total = t.anon
   for (const v of t.byId.values()) total += v.inp + v.out
-  return total
+  t.total = total
+}
+function addLines(t, text) {
+  const lines = (t.rest + text).split('\n')
+  t.rest = lines.pop()
+  for (const line of lines) {
+    if (!line.includes('"usage"')) continue
+    let msg
+    try { msg = JSON.parse(line)?.message } catch { continue }
+    const u = msg?.usage
+    if (!u) continue
+    const v = { inp: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), out: u.output_tokens || 0 }
+    // Streaming writes one message several times; count each id once, with its largest output.
+    if (typeof msg.id === 'string' && msg.id) {
+      const prev = t.byId.get(msg.id)
+      t.byId.set(msg.id, prev ? { inp: prev.inp, out: Math.max(prev.out, v.out) } : v)
+    } else t.anon += v.inp + v.out
+  }
 }
 // Forget transcripts no tab has asked about for an hour, so a long-lived server stays small.
 setInterval(() => {
@@ -150,16 +181,17 @@ function gitBranch(cwd) {
 // ---------- agent-chat name, through agent-chat's own statuslineName ----------
 // Found once a minute: "agentChatModule" in the config, else the release agent-chat's installer
 // made under $AGENT_CHAT_ROOT, else the newest copy in the Claude plugin cache.
-let agentChat = { file: null, fn: null, defaultStateRoot: null, checked: 0 }
-function findAgentChatModule(cfg) {
+// Looked up per tab (its config dir and AGENT_CHAT_ROOT), so two profiles can use different copies.
+const agentChats = new Map() // "<configDir>\0<AGENT_CHAT_ROOT>" -> { file, fn, defaultStateRoot, checked }
+export function findAgentChatModule(cfg, env = process.env) {
   if (cfg.agentChatModule) return cfg.agentChatModule.replace(/^~(?=$|[\\/])/, HOME)
-  const root = process.env.AGENT_CHAT_ROOT || path.join(HOME, '.local', 'state', 'agent-chat')
+  const root = env.AGENT_CHAT_ROOT || path.join(HOME, '.local', 'state', 'agent-chat')
   try {
     const cur = JSON.parse(fs.readFileSync(path.join(root, 'release-root', 'current.json'), 'utf8')).current.id
     const f = path.join(root, 'release-root', 'releases', cur, 'statusline-name.mjs')
     if (fs.existsSync(f)) return f
   } catch {}
-  for (const base of [path.join(HOME, '.claude'), process.env.CLAUDE_CONFIG_DIR].filter(Boolean)) {
+  for (const base of [env.CLAUDE_CONFIG_DIR, path.join(HOME, '.claude')].filter(Boolean)) {
     const cache = path.join(base, 'plugins', 'cache', 'dimokol', 'agent-chat')
     try {
       const newest = fs.readdirSync(cache).map(v => path.join(cache, v, 'server', 'statusline-name.mjs'))
@@ -169,11 +201,13 @@ function findAgentChatModule(cfg) {
   }
   return null
 }
-async function agentChatName(cfg, input, configDir) {
+async function agentChatName(cfg, input, env) {
   try {
+    const key = `${env.CLAUDE_CONFIG_DIR || ''}\0${env.AGENT_CHAT_ROOT || ''}`
+    let agentChat = agentChats.get(key) || { file: null, fn: null, defaultStateRoot: null, checked: 0 }
     if (Date.now() - agentChat.checked > 60000) {
       agentChat.checked = Date.now()
-      const file = findAgentChatModule(cfg)
+      const file = findAgentChatModule(cfg, env)
       if (file !== agentChat.file) {
         agentChat = { file, fn: null, defaultStateRoot: null, checked: Date.now() }
         if (file) {
@@ -183,11 +217,10 @@ async function agentChatName(cfg, input, configDir) {
         }
       }
     }
+    if (agentChats.size > 20) agentChats.clear()
+    agentChats.set(key, agentChat)
     if (!agentChat.fn) return ''
-    const env = { ...process.env }
-    if (configDir) env.CLAUDE_CONFIG_DIR = configDir
-    else delete env.CLAUDE_CONFIG_DIR
-    const stateRoot = process.env.AGENT_CHAT_STATE_ROOT || process.env.AGENT_CHAT_ROOT
+    const stateRoot = env.AGENT_CHAT_STATE_ROOT || env.AGENT_CHAT_ROOT
       || (agentChat.defaultStateRoot ? agentChat.defaultStateRoot(env) : path.join(HOME, '.local', 'state', 'agent-chat'))
     return agentChat.fn(input, { stateRoot, env }) || ''
   } catch { return '' }
@@ -202,28 +235,33 @@ function findPressureScript() {
   return candidates.find(f => f && fs.existsSync(f)) || null
 }
 const PRESSURE = WIN ? null : findPressureScript()
-let pressure = { at: 0, parts: [], pending: null }
+// One reading per set of thresholds: tabs with the same settings (the usual case) share it.
+const pressures = new Map() // thresholds key -> { at, parts, pending }
+const thresholdKey = env => Object.keys(env).filter(k => /^(CLAUDE_PLUGIN_OPTION|MACHINE_PRESSURE)_/.test(k)).sort().map(k => `${k}=${env[k]}`).join('&')
 // A stale reading is served at once while a fresh one is taken, so no render waits for the probe
 // (except the very first).
-function pressureParts() {
-  if (Date.now() - pressure.at < 4000) return Promise.resolve(pressure.parts)
-  const fresh = pressure.pending || refreshPressure()
-  return pressure.at ? Promise.resolve(pressure.parts) : fresh
+function pressureParts(env) {
+  const key = thresholdKey(env)
+  let p = pressures.get(key)
+  if (!p) { if (pressures.size > 20) pressures.clear(); p = { at: 0, parts: [], pending: null }; pressures.set(key, p) }
+  if (Date.now() - p.at < 4000) return Promise.resolve(p.parts)
+  const fresh = p.pending || refreshPressure(p, env)
+  return p.at ? Promise.resolve(p.parts) : fresh
 }
-function refreshPressure() {
-  pressure.pending = new Promise(resolve => {
-    const done = parts => { pressure = { at: Date.now(), parts, pending: null }; resolve(parts) }
-    if (WIN) return done(windowsPressure())
+function refreshPressure(p, env) {
+  p.pending = new Promise(resolve => {
+    const done = parts => { Object.assign(p, { at: Date.now(), parts, pending: null }); resolve(parts) }
+    if (WIN) return done(windowsPressure(env))
     if (!PRESSURE) return done([])
-    execFile('/bin/sh', [PRESSURE, '--segments'], { timeout: 3000 }, (err, stdout) => {
+    execFile('/bin/sh', [PRESSURE, '--segments'], { timeout: 3000, env }, (err, stdout) => {
       done(err ? [] : stdout.split('\x1e').map(s => s.trim()).filter(Boolean))
     })
   })
-  return pressure.pending
+  return p.pending
 }
 
-function threshold(key, dflt) {
-  const v = process.env[`CLAUDE_PLUGIN_OPTION_${key}`] || process.env[`MACHINE_PRESSURE_${key}`]
+function threshold(key, dflt, env = process.env) {
+  const v = env[`CLAUDE_PLUGIN_OPTION_${key}`] || env[`MACHINE_PRESSURE_${key}`]
   return v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : dflt
 }
 let cpuPrev = null
@@ -238,6 +276,7 @@ function cpuPercent() {
   if (!prev || now.total <= prev.total) return null
   return Math.max(0, Math.min(100, Math.round((1 - (now.idle - prev.idle) / (now.total - prev.total)) * 100)))
 }
+if (WIN) cpuPercent() // first reading, so the first render already has a delta
 export function windowsReadings() {
   const cpu = cpuPercent()
   const ram = Math.round((1 - os.freemem() / os.totalmem()) * 100)
@@ -249,15 +288,15 @@ const LEVEL_COLOR = { 2: '\x1b[31m', 1: '\x1b[33m', 0: '\x1b[32m', '-1': '\x1b[2
 const seg = (level, text) => process.env.NO_COLOR ? text : `${LEVEL_COLOR[level]}${text}\x1b[0m`
 const lvl = (v, a, r) => v === null ? -1 : v >= r ? 2 : v >= a ? 1 : 0
 const lvlLow = (v, a, r) => v === null ? -1 : v <= r ? 2 : v <= a ? 1 : 0
-function windowsPressure() {
+function windowsPressure(env = process.env) {
   const { cpu, ram, disk } = windowsReadings()
-  const sCpu = lvl(cpu, threshold('CPU_AMBER', 85), threshold('CPU_RED', 97))
-  const sRam = lvl(ram, threshold('RAM_AMBER', 85), threshold('RAM_RED', 93))
-  const sDisk = lvlLow(disk, threshold('DISK_AMBER_GB', 20), threshold('DISK_RED_GB', 10))
+  const sCpu = lvl(cpu, threshold('CPU_AMBER', 85, env), threshold('CPU_RED', 97, env))
+  const sRam = lvl(ram, threshold('RAM_AMBER', 85, env), threshold('RAM_RED', 93, env))
+  const sDisk = lvlLow(disk, threshold('DISK_AMBER_GB', 20, env), threshold('DISK_RED_GB', 10, env))
   const worst = Math.max(sCpu, sRam, sDisk)
   const level = { 2: 'RED', 1: 'AMBER', 0: 'OK', '-1': 'UNKNOWN' }[worst]
   return [
-    seg(sCpu, cpu === null ? 'CPU n/a' : `CPU ${cpu}%`),
+    seg(sCpu, cpu === null ? 'CPU …' : `CPU ${cpu}%`),
     seg(sRam, `RAM ${ram}%`),
     seg(sDisk, disk === null ? 'disk n/a' : `disk ${disk < 10 ? disk.toFixed(1) : Math.round(disk)}G`),
     seg(worst, `pressure ${level}`),
@@ -276,9 +315,65 @@ function loadLogPath(cfg) {
   if (v === true || v === '1' || v === 'true') return path.join(logDir(), 'machine-load.log')
   return String(v).replace(/^~(?=$|[\\/])/, HOME)
 }
+// Every process is read, so groups= can sum them; top= is the 5 busiest.
 const SAMPLE_CMD = {
-  darwin: 'sysctl -n vm.loadavg; sysctl -n vm.swapusage | sed -n "s/.*used = \\([^ ]*\\).*/\\1/p"; memory_pressure | tail -1 | sed "s/.*: //"; ps -axo %cpu=,rss=,command= -r | head -5',
-  linux: 'cut -d" " -f1-3 /proc/loadavg; awk \'/SwapTotal/{t=$2}/SwapFree/{f=$2}END{printf "%dM\\n",(t-f)/1024}\' /proc/meminfo; awk \'/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%d%%\\n",a*100/t}\' /proc/meminfo; ps -eo pcpu=,rss=,args= --sort=-pcpu | head -5',
+  darwin: 'sysctl -n vm.loadavg; sysctl -n vm.swapusage | sed -n "s/.*used = \\([^ ]*\\).*/\\1/p"; memory_pressure | tail -1 | sed "s/.*: //"; ps -axo %cpu=,rss=,command=',
+  linux: 'cut -d" " -f1-3 /proc/loadavg; awk \'/SwapTotal/{t=$2}/SwapFree/{f=$2}END{printf "%dM\\n",(t-f)/1024}\' /proc/meminfo; awk \'/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%d%%\\n",a*100/t}\' /proc/meminfo; ps -eo pcpu=,rss=,args=',
+}
+// groups=: `name=count/cpu%/rssM` summed over every process in the group, so "how many vitest
+// workers, tabs or builds at once" is in the log. First match wins, tested on the full command line.
+// The .app and Spotlight entries only ever match on macOS.
+export const GROUPS = [
+  ['claude', /\/claude\/versions\/|^(\S*\/)?claude(\s|$)/],
+  ['codex', /^(\S*\/)?codex(\s|$)|\/codex\/codex(\s|$)/],
+  ['vitest', /node_modules\/(\.bin\/)?vitest/],
+  ['eslint', /node_modules\/(\.bin\/)?eslint/],
+  ['tsc', /node_modules\/(\.bin\/)?(typescript|tsc|tsrs|@typescript\/native)/],
+  ['next', /next-server|next-build|node_modules\/(\.bin\/)?next(\/|\s)/],
+  ['expo', /node_modules\/(\.bin\/)?(expo|@expo|metro)/],
+  ['gradle', /org\.gradle\./],
+  ['clang', /\/(clang(\+\+)?|ld\.lld|ninja|cc1plus)(\s|$)/],
+  ['vscode', /\/Visual Studio Code\.app\/|\/(code|code-insiders)(\s|$)/],
+  ['brave', /\/Brave Browser\.app\//],
+  ['brave-claude', /\/Brave Claude\.app\//],
+  ['mongod', /\/mongod[^/\s]*(\s|$)/],
+  ['spotlight', /\/(mds|mds_stores|mdworker|mdworker_shared)(\s|$)/],
+]
+// A readable name: the outermost .app for GUI apps, `claude` for a versioned claude binary, and for
+// node/python/sh the script or node_modules package it runs.
+export function procName(cmdline) {
+  const app = /\/([^/]+)\.app\//.exec(cmdline)
+  if (app) return app[1].replace(/\s+/g, '_')
+  const [cmd, ...args] = cmdline.split(/\s+/)
+  if (cmd.includes('/claude/versions/')) return 'claude'
+  let name = path.basename(cmd || '?')
+  if (/^(node|python3?|sh|bash|zsh)$/.test(name)) {
+    const a = args.find(x => !x.startsWith('-'))
+    if (a) {
+      const pkg = /.*node_modules\/((@[^/]+\/)?[^/]+)\/?/.exec(a)
+      name += ':' + (pkg && pkg[1] !== '.bin' ? pkg[1] : path.basename(a))
+    }
+  }
+  return name
+}
+export function summarize(rows) { // ps lines "cpu rss command" -> { top, groups }
+  const procs = rows.map(l => {
+    const m = /^\s*([\d.]+)\s+(\d+)\s+(.*)$/.exec(l)
+    return m && { cpu: +m[1], rss: +m[2], cmd: m[3] }
+  }).filter(Boolean)
+  const top = [...procs].sort((a, b) => b.cpu - a.cpu).slice(0, 5)
+    .map(p => `${procName(p.cmd)}=${p.cpu}%/${Math.round(p.rss / 1024)}M`).join(' ')
+  const sums = new Map()
+  for (const p of procs) {
+    const g = GROUPS.find(([, re]) => re.test(p.cmd))
+    if (!g) continue
+    const v = sums.get(g[0]) || { n: 0, cpu: 0, rss: 0 }
+    v.n++; v.cpu += p.cpu; v.rss += p.rss
+    sums.set(g[0], v)
+  }
+  const groups = GROUPS.filter(([k]) => sums.has(k))
+    .map(([k]) => { const v = sums.get(k); return `${k}=${v.n}/${Math.round(v.cpu)}%/${Math.round(v.rss / 1024)}M` }).join(' ')
+  return { top, groups }
 }
 let lastSample = 0
 function sample(cfg) {
@@ -299,17 +394,11 @@ function sample(cfg) {
   }
   const cmd = SAMPLE_CMD[process.platform]
   if (!cmd) return
-  execFile('/bin/sh', ['-c', cmd], { timeout: 3000 }, (err, out) => {
+  execFile('/bin/sh', ['-c', cmd], { timeout: 3000, maxBuffer: 16 << 20 }, (err, out) => {
     if (err) return
-    const [load, swap, mem, ...top] = out.trim().split('\n')
-    // For node/python/sh, name the script it runs; otherwise the program.
-    const procs = top.map(l => {
-      const [cpu, rss, cmd, ...args] = l.trim().split(/\s+/)
-      let name = path.basename(cmd || '?')
-      if (/^(node|python3?|sh|bash|zsh)$/.test(name)) { const a = args.find(x => !x.startsWith('-')); if (a) name += ':' + path.basename(a) }
-      return `${name}=${cpu}%/${Math.round(rss / 1024)}M`
-    }).join(' ')
-    write(`load=${load.replace(/[{}]/g, '').trim()} swap=${swap} free=${mem} top=${procs}`)
+    const [load, swap, mem, ...rows] = out.trim().split('\n')
+    const { top, groups } = summarize(rows)
+    write(`load=${load.replace(/[{}]/g, '').trim()} swap=${swap} free=${mem} top=${top} groups=${groups}`)
   })
 }
 
@@ -320,7 +409,7 @@ async function segment(type, input, ctx) {
   const now = Date.now()
   switch (type) {
     case 'model': return input.model?.display_name || null
-    case 'agent-chat': return (await agentChatName(ctx.cfg, input, ctx.configDir)) || null
+    case 'agent-chat': return (await agentChatName(ctx.cfg, input, ctx.env)) || null
     case 'effort': return input.effort?.level || null
     case 'context': {
       const cw = input.context_window?.current_usage
@@ -337,18 +426,18 @@ async function segment(type, input, ctx) {
     default: return null
   }
 }
-export async function render(input, configDir = '') {
+export async function render(input, configDir = '', env = requestEnv('', configDir)) {
   const cfg = loadConfig()
   sample(cfg)
   const sep = paint(cfg.colors?.separator ?? DEFAULT_COLORS.separator, cfg.separator ?? ' | ')
-  const ctx = { cfg, configDir }
+  const ctx = { cfg, env }
   const out = []
   for (const line of cfg.lines) {
     if (!Array.isArray(line)) continue
     const parts = []
     for (const item of line) {
       const spec = typeof item === 'string' ? { type: item } : item || {}
-      if (spec.type === 'pressure') { parts.push(...await pressureParts()); continue }
+      if (spec.type === 'pressure') { parts.push(...await pressureParts(env)); continue }
       if (spec.type === 'text') { if (spec.text) parts.push(paint(spec.color ?? null, spec.text)); continue }
       const text = (await segment(spec.type, input, ctx)) || spec.fallback
       if (text) parts.push(paint(spec.color ?? cfg.colors?.[spec.type] ?? DEFAULT_COLORS[spec.type] ?? null, text))
@@ -366,14 +455,19 @@ function main() {
   let idleTimer
   const bumpIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(shutdown, IDLE_MS) }
   let listening = false
-  const writePid = () => { try { fs.writeFileSync(path.join(DIR, 'server.pid'), `${process.pid}\n`) } catch {} }
-  function shutdown() {
+  const PIDFILE = path.join(DIR, 'server.pid')
+  const writePid = () => { try { fs.writeFileSync(PIDFILE, `${process.pid}\n`) } catch {} }
+  function shutdown(code = 0) {
     if (listening) {
       if (WIN) { try { if (fs.readFileSync(ENDPOINT, 'utf8').includes(token)) fs.unlinkSync(ENDPOINT) } catch {} }
       else { try { fs.unlinkSync(SOCK) } catch {} }
     }
-    process.exit(0)
+    // Only our own pid: after a restart the file may already name the next server.
+    try { if (fs.readFileSync(PIDFILE, 'utf8').trim() === String(process.pid)) fs.unlinkSync(PIDFILE) } catch {}
+    process.exit(code)
   }
+  // Fails loudly into server.log; client.sh points at it after two failed starts.
+  const fatal = (what, e) => { console.error(`${new Date().toISOString()} shared-statusline: ${what}: ${e?.stack || e}`); shutdown(1) }
 
   const server = http.createServer((req, res) => {
     if (WIN && req.headers['x-token'] !== token) { res.writeHead(403); res.end(); return }
@@ -383,25 +477,33 @@ function main() {
     req.on('data', d => { body += d; if (body.length > 1 << 20) req.destroy() })
     req.on('end', async () => {
       let out = ''
-      try { out = await render(JSON.parse(body), String(req.headers['x-config-dir'] || '')) } catch (e) { out = `statusline: ${e.message}` }
+      try {
+        const configDir = String(req.headers['x-config-dir'] || '')
+        out = await render(JSON.parse(body), configDir, requestEnv(req.headers['x-env'], configDir))
+      } catch (e) { out = `statusline: ${e.message}` }
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
       res.end(out)
     })
     req.on('error', () => {})
   })
   server.setTimeout(3000)
+  server.on('error', e => fatal('listen failed', e))
 
   const listen = () => {
     if (WIN) {
       server.listen(0, '127.0.0.1', () => {
-        const tmp = `${ENDPOINT}.${process.pid}`
-        fs.writeFileSync(tmp, `${server.address().port} ${token}\n`, { mode: 0o600 })
-        fs.renameSync(tmp, ENDPOINT)
-        listening = true; bumpIdle(); writePid()
+        try {
+          const tmp = `${ENDPOINT}.${process.pid}`
+          fs.writeFileSync(tmp, `${server.address().port} ${token}\n`, { mode: 0o600 })
+          fs.renameSync(tmp, ENDPOINT)
+          listening = true; bumpIdle(); writePid()
+        } catch (e) { fatal('writing the endpoint file', e) }
       })
     } else {
       try { fs.unlinkSync(SOCK) } catch {}
-      server.listen(SOCK, () => { fs.chmodSync(SOCK, 0o600); listening = true; bumpIdle(); writePid() })
+      server.listen(SOCK, () => {
+        try { fs.chmodSync(SOCK, 0o600); listening = true; bumpIdle(); writePid() } catch (e) { fatal('setting up the socket', e) }
+      })
     }
   }
   // Another server already answering means this one lost a start race: leave quietly.
@@ -422,8 +524,9 @@ function main() {
     probe.on('error', listen)
   }
   setInterval(() => { try { if (fs.statSync(SELF).mtimeMs !== SELF_MTIME) shutdown() } catch { shutdown() } }, 60000).unref()
-  process.on('SIGTERM', shutdown)
-  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', () => shutdown())
+  process.on('SIGINT', () => shutdown())
+  process.on('uncaughtException', e => fatal('crashed', e))
 }
 
 const isMain = () => { try { return fs.realpathSync(process.argv[1]) === fs.realpathSync(SELF) } catch { return false } }

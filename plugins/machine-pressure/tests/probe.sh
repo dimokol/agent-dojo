@@ -157,6 +157,20 @@ eq "unsupported OS: UNKNOWN" UNKNOWN "$(jf "$(probe --json)" .level)"
 mkenv; printf '#!/bin/sh\necho Darwin garbage\n' > "$BIN/sysctl"
 eq "garbage sysctl output is ignored" null "$(jf "$(probe --json)" .load1)"
 
+echo "== Windows (Git Bash): powershell stub =="
+mkenv; OSNAME=MINGW64_NT-10.0-19045; write_stubs
+# cpu 30%, 16 GB RAM with 4 GB free (75% used), commit 32 GB with 4 GB free (87%)
+printf '#!/bin/sh\nprintf "30 16777216 4194304 33554432 4194304\\r\\n"\n' > "$BIN/powershell.exe"; chmod +x "$BIN/powershell.exe"
+out=$(NUMBER_OF_PROCESSORS=8 probe --json)
+eq "windows cpu" 30 "$(jf "$out" .cpu_pct)"
+eq "windows ram" 75 "$(jf "$out" .ram_pct)"
+eq "windows commit charge in the swap slot" 87 "$(jf "$out" .swap_pct)"
+eq "windows level from commit charge" AMBER "$(jf "$out" .level)"
+eq "windows statusline names commit" "CPU 30% | RAM 75% | commit 87% | load n/a | disk 100G | pressure AMBER" "$(rm -f "$WORK"/env/tmp/*.cache; NUMBER_OF_PROCESSORS=8 probe --statusline)"
+mkenv; OSNAME=MSYS_NT-10.0; write_stubs
+printf '#!/bin/sh\nexit 1\n' > "$BIN/powershell.exe"; printf '#!/bin/sh\nexit 1\n' > "$BIN/df"; chmod +x "$BIN/powershell.exe"
+eq "windows without powershell: UNKNOWN" UNKNOWN "$(jf "$(probe --json)" .level)"
+
 echo "== Linux: fake /proc =="
 linux_proc() { # idle-total pair is written by caller; here meminfo, loadavg and cpu lines
   cat > "$WORK/env/proc/meminfo" <<EOF

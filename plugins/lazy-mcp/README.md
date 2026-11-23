@@ -34,7 +34,9 @@ Codex (`~/.codex/config.toml`):
 - The cache is filled by running the server once when it's missing or older than 7 days, and refreshed each time the real server starts.
 - Any other request starts the server, replays the client's `initialize`, and from then on every line passes straight through.
 - When the client closes, the server gets 5 seconds to exit on its own, then it's stopped.
-- If the cache can't be filled, or `jq` is missing, the shim runs the server directly. A server never goes missing because of the shim.
+- If the cache can't be filled, or `jq` is missing, the shim runs the server directly. A server never goes missing because of the shim. A failed fill leaves `prime-failed` in the cache folder, and for 24 hours the shim runs the server directly without trying again (delete the file to retry now).
+- Filling the cache has one deadline, 10 s by default, so it never holds the client past its connection timeout.
+- The shim watches the process that started it. If that dies without closing the shim's input (a forced kill), the shim stops the server and exits.
 
 | Env var | Default | What it does |
 | --- | --- | --- |
@@ -42,11 +44,13 @@ Codex (`~/.codex/config.toml`):
 | `LAZY_MCP_LOG` | `~/Library/Logs/lazy-mcp.log` (macOS), `$XDG_STATE_HOME/lazy-mcp/lazy-mcp.log` (Linux), `%LOCALAPPDATA%\lazy-mcp\lazy-mcp.log` (Windows) | One line per start, never message contents. 1 MB, then one older copy |
 | `LAZY_MCP_TRACE` | off | `1` also logs each method name |
 | `LAZY_MCP_GRACE` | 5 | Seconds a server gets to exit after the client closes |
+| `LAZY_MCP_PRIME_TIMEOUT` | 10 | Seconds the whole cache fill may take |
+| `LAZY_MCP_TRANSPORT` | `fifo`, or `coproc` on Git Bash, MSYS and Cygwin | How the shim talks to the server it starts |
 
 ## Limits
 
 - Stdio servers only. A server whose tool list changes while it runs shows the cached list until it starts.
-- Needs bash and `jq`. macOS's bash 3.2 works (named pipes). Windows needs Git Bash; there the shim uses a bash coproc when named pipes don't work.
+- Needs bash and `jq`. macOS's bash 3.2 works (named pipes). Windows needs Git Bash; there the shim always uses a bash coproc, since a native server (node.exe, python.exe) can't open an msys named pipe. When the parent is a native Windows process its PID isn't visible to bash, so the parent watch relies on the input closing.
 - Tests run on macOS and Linux in CI (`bash tests/run.sh`).
 
 ## Turn it off

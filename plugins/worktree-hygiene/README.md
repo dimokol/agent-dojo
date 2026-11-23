@@ -30,7 +30,7 @@ With `auto_sweep` on, `scripts/worktree-sweep.sh` runs at session start, returns
 
 - `git status` is empty, untracked files included.
 - Its HEAD is on a remote branch after a successful `git fetch` (pushed or merged).
-- No process has its working directory inside it (`lsof`, or `/proc` on Linux).
+- No process has its working directory inside it (`lsof`, or `/proc` on Linux). Where that can't be checked, every worktree is kept.
 - No file outside `node_modules` changed for `sweep_idle_min` minutes (default 120).
 - Every ignored file is a build artifact (`node_modules`, `.next`, `dist` and so on) or also exists in the main checkout. A `.scratch` folder with files keeps the worktree.
 
@@ -53,4 +53,4 @@ Why a hook and not a scheduled job: macOS privacy rules hide `~/Documents` from 
 ## Requirements
 The audit is tested on macOS; its Linux code paths haven't been run on Linux yet. Needs `git`. Optional: `gh` (merged-PR lookup, falls back to `git branch --merged`) and `docker`.
 
-The sweep needs bash and git 2.31+. Its tests (`bash tests/run.sh`) run on macOS and Linux in CI. On Windows it runs under Git Bash; there's no `lsof` there, so the in-use check relies on Windows refusing to delete files a process holds open.
+The sweep needs bash and git 2.31+. Its tests (`bash tests/run.sh`) run on macOS and Linux in CI. On Windows it runs under Git Bash, but it removes no worktrees there: Git Bash's `/proc` lists only msys processes, so a Claude, node or VS Code process inside a worktree can't be seen. Every worktree is kept with `busy check unavailable` in the log. Merged local branches that aren't checked out are still deleted.

@@ -26,11 +26,15 @@ Install (a plugin can't set statusLine, so the files go to a fixed folder):
 
     sh ~/.claude/plugins/cache/dimokol/machine-pressure/*/statusline/install.sh
 
-It copies `client.sh`, `server.mjs` and `pressure.sh` to `~/.claude/scripts/shared-statusline/` (or the folder you pass) and prints the setting:
+It copies `client.sh`, `server.mjs` and `pressure.sh` to `~/.claude-shared/tools/shared-statusline/` when `~/.claude-shared` exists, else `~/.claude/scripts/shared-statusline/` (or the folder you pass), and prints the setting:
 
-    { "statusLine": { "type": "command", "command": "sh ~/.claude/scripts/shared-statusline/client.sh", "padding": 0 } }
+    { "statusLine": { "type": "command", "command": "sh ~/.claude/scripts/shared-statusline/client.sh", "padding": 0, "refreshInterval": 10 } }
 
-Rerun it after a plugin update; the server restarts within a minute when its file changes. The first render after a restart prints `statusline starting...` while the server comes up. It exits after 30 minutes without a request.
+`--settings <config dir>` writes it instead, once per profile (`--settings ~/.claude-dimo --settings ~/.claude-2`), keeping a `.bak`. On Windows the printed path is `C:/Users/...` (through `cygpath -m`).
+
+Rerun it after a plugin update; the server restarts within a minute when its file changes. The first render after a restart may print `statusline starting...` while the server comes up. If two starts in a row fail, the line says `shared-statusline: server failed, see <log>` (`~/.cache/shared-statusline/server.log`, 1 MB plus one older copy). It exits after 30 minutes without a request.
+
+One server serves every profile. Each tab sends its `CLAUDE_CONFIG_DIR`, `AGENT_CHAT_ROOT`, `AGENT_CHAT_STATE_ROOT` and pressure thresholds with the request, so those can differ per profile. `NO_COLOR`, the layout file and the load log are machine-wide.
 
 ### Layout
 
@@ -53,7 +57,7 @@ Each line is a list of segments: a name, or `{ "type", "color", "fallback" }`. C
 | `agent-chat` | This session's [agent-chat](../agent-chat) name, when agent-chat is installed (or set `agentChatModule` to its `statusline-name.mjs`) |
 | `effort` | Reasoning effort |
 | `context` | Tokens in the context window |
-| `session-tokens` | All tokens this session used, read from the transcript incrementally |
+| `session-tokens` | All tokens this session used, read from the transcript in the background (a long transcript seen for the first time shows up a render or two later) |
 | `five-hour`, `five-hour-reset` | Five-hour usage % and time to reset |
 | `week`, `week-reset` | Weekly usage % and time to reset |
 | `branch` | Git branch, read from `.git/HEAD` (no git process) |
@@ -62,9 +66,9 @@ Each line is a list of segments: a name, or `{ "type", "color", "fallback" }`. C
 | `pressure` | CPU, RAM, swap, load, free disk and the pressure level, colored like the gate sees them |
 | `text` | `{ "type": "text", "text": "..." }` |
 
-`"loadLog": true` (or `SHARED_STATUSLINE_LOAD_LOG=1`) appends one machine sample per 10 s, load, swap, free memory and the top 5 processes, to `~/Library/Logs/machine-load.log` (macOS), `$XDG_STATE_HOME/shared-statusline/` (Linux) or `%LOCALAPPDATA%\shared-statusline\` (Windows). It's capped at 5 MB plus one older file. Off by default.
+`"loadLog": true` (or `SHARED_STATUSLINE_LOAD_LOG=1`) appends one machine sample per 10 s, load, swap, free memory, the top 5 processes and `groups=` (count, CPU and memory summed per kind: claude, codex, vitest, tsc, next, browsers, ...), to `~/Library/Logs/machine-load.log` (macOS), `$XDG_STATE_HOME/shared-statusline/` (Linux) or `%LOCALAPPDATA%\shared-statusline\` (Windows). It's capped at 5 MB plus one older file. Off by default.
 
-How it talks: a unix socket at `~/.cache/shared-statusline/sock` (mode 0600) on macOS and Linux. On Windows node can't listen on a socket file, so the server takes a random loopback port and writes it with a random token to `~/.cache/shared-statusline/endpoint`; the client sends the token. Windows has no load average, so the pressure row there shows CPU, RAM and disk, read inside the server.
+How it talks: a unix socket at `~/.cache/shared-statusline/sock` (mode 0600) on macOS and Linux. On Windows node can't listen on a socket file, so the server takes a random loopback port and writes it with a random token to `~/.cache/shared-statusline/endpoint`; the client sends the token. Windows has no load average, so the pressure row there shows CPU, RAM and disk, read inside the server (the Windows load log has CPU and RAM only). `pressure.sh` on its own reads Windows too, through one `powershell.exe` call: CPU, RAM, disk, and the commit charge in the swap slot, named `commit`.
 
 ### Other ways to show pressure
 
@@ -93,4 +97,4 @@ Each setting comes from the plugin option, then the env var (`settings.json` `en
 
 ## Requirements
 
-Tests pass on macOS and Linux in CI, and day-to-day use so far is on macOS. The shared status line needs node 18.15+ and curl; on Windows it runs under Git Bash. Needs `sh`, `awk`, and `jq` for the gate (without jq it allows everything and says so once). Other systems report UNKNOWN. Where `ps` lacks `-A -o pid=,ppid=,command=` (busybox), the parallel cap does nothing.
+Tests pass on macOS and Linux in CI, and day-to-day use so far is on macOS. The shared status line needs node 18.15+ and curl; on Windows it runs under Git Bash. Needs `sh`, `awk`, and `jq` for the gate (without jq it allows everything and says so once). Windows reads come from `powershell.exe` (Git Bash, MSYS or Cygwin). Other systems report UNKNOWN. Where `ps` lacks `-A -o pid=,ppid=,command=` (busybox), the parallel cap does nothing.

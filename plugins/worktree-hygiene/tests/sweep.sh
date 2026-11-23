@@ -67,6 +67,13 @@ branch_kept "main kept" main
 branch_gone "removed worktree's branch deleted (it's on the remote)" merged
 kill $SLEEPER 2>/dev/null; wait $SLEEPER 2>/dev/null; SLEEPER=""
 
+echo "== Windows keeps every worktree (no reliable busy check)"
+setup
+(cd "$R" && WORKTREE_SWEEP_UNAME=MINGW64_NT-10.0 bash "$SWEEP" >/dev/null)
+kept "clean, pushed, idle worktree kept on Windows" "$WORK/src/merged"
+grep -q "keep $WORK/src/merged (busy check unavailable on MINGW64_NT-10.0)" "$WORK/sweep.log" && ok "log says why" || bad "log says why"
+branch_gone "pushed branch that isn't checked out is still deleted" pushed-branch
+
 echo "== idle guard"
 setup
 (cd "$R" && WORKTREE_SWEEP_IDLE_MIN=120 bash "$SWEEP" >/dev/null)

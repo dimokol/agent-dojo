@@ -13,8 +13,11 @@
 # could be read. If no signal can be read (unsupported OS, failed reads) the
 # level is UNKNOWN, never RED.
 #
-# Platforms: macOS (sysctl, vm_stat, ps, df) and Linux (/proc, df). Anything
-# else reports UNKNOWN. On macOS the kernel's memory pressure level
+# Platforms: macOS (sysctl, vm_stat, ps, df), Linux (/proc, df) and Windows under
+# Git Bash, MSYS or Cygwin (one powershell.exe call per sample, df). Windows has no
+# load average; its swap segment is the commit charge (committed memory against
+# the commit limit), named "commit", with the swap thresholds. Anything else
+# reports UNKNOWN. On macOS the kernel's memory pressure level
 # (kern.memorystatus_vm_pressure_level: warn is AMBER, critical is RED) counts
 # with RAM, and swap is shown without setting the level: macOS grows swap on
 # demand and keeps pages in it long after the pressure is gone.
@@ -107,6 +110,19 @@ sample_darwin() {
   case $mem in ''|*[!0-9]*|0) mem="" ;; esac
 }
 
+# Windows: CPU load, physical memory and commit charge in one powershell call (about 0.3 to 0.6 s,
+# so the 4 s cache matters most here). Values are KB.
+sample_windows() {
+  cores=${NUMBER_OF_PROCESSORS:-}
+  case $cores in ''|*[!0-9]*|0) cores="" ;; esac
+  _w=$(powershell.exe -NoProfile -NonInteractive -Command '$o = Get-CimInstance Win32_OperatingSystem; $c = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; "$([int]$c) $($o.TotalVisibleMemorySize) $($o.FreePhysicalMemory) $($o.TotalVirtualMemorySize) $($o.FreeVirtualMemory)"' 2>/dev/null | tr -d '\r')
+  set -- $_w
+  [ $# -eq 5 ] || return 0
+  isnum "$1" && cpu=$1
+  ram=$(awk -v t="$2" -v f="$3" 'BEGIN{ if (t+0<=0) exit; v=(1-f/t)*100; if(v<0)v=0; printf "%d", v }')
+  swap=$(awk -v t="$4" -v f="$5" 'BEGIN{ if (t+0<=0) exit; v=(1-f/t)*100; if(v<0)v=0; printf "%d", v }')
+}
+
 linux_cpu_counters() { # prints "idle total" from the aggregate cpu line
   awk '/^cpu /{ idle=$5+$6; t=0; for(i=2;i<=9;i++) t+=$i; print idle, t; exit }' "$1/stat" 2>/dev/null
 }
@@ -178,6 +194,7 @@ if ! load_cache; then
   case $OS in
     Darwin) sample_darwin; sample_disk ;;
     Linux)  sample_linux;  sample_disk ;;
+    MINGW*|MSYS*|CYGWIN*) sample_windows; sample_disk ;;
     *) ;;
   esac
   for _v in cpu ram swap load1 disk cores mem; do
@@ -253,7 +270,8 @@ seg() { # level text
 
 t_cpu="CPU n/a";   [ -n "$cpu" ]   && t_cpu="CPU ${cpu}%"
 t_ram="RAM n/a";   [ -n "$ram" ]   && t_ram="RAM ${ram}%"
-t_swap="swap n/a"; [ -n "$swap" ]  && t_swap="swap ${swap}%"
+SWAPNAME=swap; case $OS in MINGW*|MSYS*|CYGWIN*) SWAPNAME=commit ;; esac
+t_swap="$SWAPNAME n/a"; [ -n "$swap" ]  && t_swap="$SWAPNAME ${swap}%"
 t_load="load n/a"; [ -n "$load1" ] && t_load="load $(fmt_load "$load1")"
 t_disk="disk n/a"; [ -n "$disk" ]  && t_disk="disk $(fmt_disk "$disk")"
 t_level="pressure $level"
