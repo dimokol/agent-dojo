@@ -77,7 +77,7 @@ function privateFolder(directory) {
   if (!stat.isDirectory() || !ownedByMe(stat) || hasModeBits(stat, 0o077)) throw new Error(`unsafe daemon folder ${directory}`)
 }
 
-export function startDaemon(socketPath, { idleMs = Number(process.env.AGENT_CHAT_DAEMON_IDLE_MS) || 120_000, log = () => {}, exit = code => process.exit(code) } = {}) {
+export function startDaemon(socketPath, { idleMs = Number(process.env.AGENT_CHAT_DAEMON_IDLE_MS) || 120_000, keyCheckMs = 30_000, log = () => {}, exit = code => process.exit(code) } = {}) {
   if (!path.isAbsolute(socketPath)) throw new Error('absolute socket path required')
   privateFolder(path.dirname(socketPath))
   // SQLite holds an OS lock for the daemon's life; process death, SIGKILL included, releases it.
@@ -87,11 +87,11 @@ export function startDaemon(socketPath, { idleMs = Number(process.env.AGENT_CHAT
   fs.rmSync(socketPath, { force: true })
   // Windows: the socket path is a key file naming a random pipe; a hello must carry its key.
   const windowsPipe = WINDOWS ? { pipe: `\\\\.\\pipe\\agent-chat-${randomBytes(16).toString('hex')}`, key: randomBytes(32).toString('hex') } : null
-  let connections = 0, idleTimer = null, stopping = false
+  let connections = 0, idleTimer = null, keyTimer = null, stopping = false
   const stop = reason => {
     if (stopping) return
     stopping = true
-    clearTimeout(idleTimer)
+    clearTimeout(idleTimer); clearInterval(keyTimer)
     log(`stop: ${reason}`)
     server.close()
     try { fs.rmSync(socketPath, { force: true }) } catch {}
@@ -157,14 +157,33 @@ export function startDaemon(socketPath, { idleMs = Number(process.env.AGENT_CHAT
   server.on('error', error => { log(`server error: ${error.code ?? error.message}`); stop('server error') })
   server.listen(windowsPipe ? windowsPipe.pipe : socketPath, () => {
     if (windowsPipe) {
-      const temp = `${socketPath}.${process.pid}.tmp`
-      fs.writeFileSync(temp, JSON.stringify(windowsPipe) + '\n', { mode: 0o600 })
-      fs.renameSync(temp, socketPath)
+      const text = JSON.stringify(windowsPipe) + '\n'
+      restoreKeyFile(socketPath, text)
+      keyTimer = setInterval(() => { try { if (!stopping && restoreKeyFile(socketPath, text)) log('key file restored') } catch {} }, keyCheckMs)
+      keyTimer.unref()
     } else fs.chmodSync(socketPath, 0o600)
     log(`listening (pid ${process.pid})`)
     armIdle()
   })
   return { server, stop, get connections() { return connections } }
+}
+
+// An uncaught error can leave the daemon half broken while it keeps serving every tab. Exit instead:
+// each bridge reconnects and starts a fresh daemon, and a call in flight is answered "retry".
+export function exitOnCrash(proc, { log, exit = code => proc.exit(code) }) {
+  const crash = kind => error => { log(`${kind}, exiting so the bridges start a fresh daemon: ${String(error?.stack ?? error).slice(0, 300)}`); exit(1) }
+  proc.on('uncaughtException', crash('uncaught'))
+  proc.on('unhandledRejection', crash('unhandled'))
+}
+
+// Windows: a key file removed while the daemon runs (a cleanup, a sync tool) would leave every new
+// tab without agent-chat until the last tab closes. Put it back. Returns true when it rewrote it.
+export function restoreKeyFile(file, text) {
+  try { if (fs.readFileSync(file, 'utf8') === text) return false } catch {}
+  const temp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(temp, text, { mode: 0o600 })
+  fs.renameSync(temp, file)
+  return true
 }
 
 function fileLog(socketPath) {
@@ -180,9 +199,7 @@ function fileLog(socketPath) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const socketPath = process.argv[2]
   const log = fileLog(socketPath ?? '/nonexistent/daemon')
-  // One tab's failure must not end every tab's agent-chat: log it and keep serving.
-  process.on('uncaughtException', error => log(`uncaught: ${String(error?.stack ?? error).slice(0, 300)}`))
-  process.on('unhandledRejection', error => log(`unhandled: ${String(error?.stack ?? error).slice(0, 300)}`))
+  exitOnCrash(process, { log })
   try { if (!startDaemon(socketPath, { log })) process.exit(0) }
   catch (error) { log(`start failed: ${error.message}`); process.exit(1) }
 }
