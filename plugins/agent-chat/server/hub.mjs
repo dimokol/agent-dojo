@@ -10,7 +10,8 @@
 // signs every answer. Each device long-polls GET /v1/drain with its cursor (the last hub sequence it
 // stored) and gets the events of the projects it follows: rooms made, members, messages.
 //
-// Data (one private folder, default <chat root>/.hub): hub-key.pem, devices.json, events.jsonl
+// Data (one private folder, default <state root>/hub; the chat root sits under ~/Documents on the
+// Mac, which macOS keeps from background jobs like a launchd hub): hub-key.pem, devices.json, events.jsonl
 // (append-only, fsynced, the canonical log), cursors.json, invites/ (one file per open invite,
 // deleted on use or expiry), audit.log (metadata only, 1 MB x 3).
 import './runtime.mjs'
@@ -24,9 +25,8 @@ import { PROTOCOL, PROTOCOL_HEADER, DEFAULT_PORT, INVITE_TTL_MS, MAX_BODY, newKe
   signHeaders, verifySignature, timeOk, nonceOk, encodeInvite, secretsMatch, sha256, b64u, validProject } from './hub-protocol.mjs'
 import { ensureDirectory, readJson, atomicJson, append, identifier } from './store-files.mjs'
 import { isBroadcast } from './message-policy.mjs'
-import { distribution } from './distribution.mjs'
 
-export const defaultHubDir = (env = process.env) => env.AGENT_CHAT_HUB_DIR || path.join(env.AGENT_CHAT_ROOT || path.join(os.homedir(), ...distribution.chatRoot), '.hub')
+export const defaultHubDir = (env = process.env) => env.AGENT_CHAT_HUB_DIR || path.join(env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(), '.local', 'state', 'agent-chat'), 'hub')
 const LEASE_MS = 60_000
 const DRAIN_BATCH = 500
 const MAX_WAIT_S = 30

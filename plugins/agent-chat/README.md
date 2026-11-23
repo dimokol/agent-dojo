@@ -235,7 +235,7 @@ Windows over Tailscale is next.
 Set up once:
 
 1. On the hub machine: `node server/hub.mjs serve --listen 127.0.0.1:47390 --listen <tailscale ip>:47390`
-   (never all interfaces; data in a private `.hub` folder in the chat root).
+   (never all interfaces; data in a private `hub` folder in the state root).
 2. For each device: `node server/hub.mjs invite --address <hub name>:47390` prints a code that
    works once, for 10 minutes. Carry it by hand, never through git or chat.
 3. On that device: `node server/device.mjs pair <code>`. The key and the hub's address land in
