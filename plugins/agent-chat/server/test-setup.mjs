@@ -8,6 +8,10 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { WIN_HELPER } from './platform.mjs'
 
+// The suite tests the version check as switched on. Set here, not in the npm script, because npm
+// runs scripts with cmd on Windows, where `VAR=value command` doesn't parse.
+process.env.AGENT_CHAT_VERSION_CHECK = 'on'
+
 if (process.platform === 'win32' && !process.env.AGENT_CHAT_TEST_TEMP) {
   // realpathSync.native expands 8.3 short names (C:\Users\RUNNER~1 on CI), which git and Claude
   // never print, so paths compare equal.
