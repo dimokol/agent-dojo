@@ -35,6 +35,8 @@ for f in "$HERE/client.sh" "$HERE/server.mjs" "$HERE/../scripts/pressure.sh"; do
   mv -f "$DEST/.$(basename "$f").new" "$DEST/$(basename "$f")"
 done
 chmod +x "$DEST/client.sh" "$DEST/pressure.sh"
+# The example layouts go along, so the layout hint below points at a copy that stays.
+mkdir -p "$DEST/examples" && cp "$HERE"/examples/*.json "$DEST/examples/"
 # Windows (Git Bash): settings.json needs a path Claude Code can hand to sh, C:/Users/..., not /c/...
 SHOW=$DEST; command -v cygpath >/dev/null 2>&1 && SHOW=$(cygpath -m "$DEST")
 CMD="sh $SHOW/client.sh"
@@ -59,7 +61,7 @@ else
 fi
 CFG=${SHARED_STATUSLINE_CONFIG:-$HOME/.config/shared-statusline/config.json}
 if [ ! -f "$CFG" ]; then
-  SRC=$HERE/examples/full.json; TO=$CFG
+  SRC=$DEST/examples/full.json; TO=$CFG
   command -v cygpath >/dev/null 2>&1 && { SRC=$(cygpath -m "$SRC"); TO=$(cygpath -m "$CFG"); }
   echo "Optional layout: copy $SRC to $TO"
 fi
