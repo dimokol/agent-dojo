@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { stopChild } from './test-platform.mjs'
 
 // Errors a client can fix reach it word for word over stdio; before PR #6's review they all
 // came back as one generic failure, which also claimed a never-stored post was kept.
@@ -31,6 +32,7 @@ async function session(t, calls) {
   const results = []
   for (const [index, [name, args]] of calls.entries()) results.push(await call(index + 1, name, args))
   child.stdin.end()
+  await stopChild(child) // before the folder it runs in is removed
   return results
 }
 

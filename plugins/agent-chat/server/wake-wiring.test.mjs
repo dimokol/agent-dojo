@@ -7,6 +7,7 @@ import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
 import { processIdentity } from './native-session.mjs'
 import { ringClaude, ringFile, readRing } from './wake-ring.mjs'
+import { claudeEndpoint, socketOnly } from './test-platform.mjs'
 
 // 2.0.4 hook mode: the inbox read settles the reading tab's wake ring, so the waiter armed after
 // the woken turn doesn't wake the session a second time for mail it already read.
@@ -23,7 +24,7 @@ function fixture(t) {
   const store = createStore({ root: path.join(dir, 'chats'), projectRoot: dir, stateRoot })
   store.createRoom({ room: 'r', title: 'r' })
   const own = service => (closers.push(() => service.close()), service)
-  const session = { runtime: 'claude', id: LAUNCH, profileHome: profile, endpoint: '/private/agent-chat-wake.sock',
+  const session = { runtime: 'claude', id: LAUNCH, profileHome: profile, endpoint: claudeEndpoint('/private/agent-chat-wake.sock'),
     clientPid: self.pid, clientStart: self.start, serverPid: self.pid, serverStart: self.start }
   return { store, own, session, wakeDir }
 }
@@ -49,7 +50,7 @@ test('hook mode: an inbox read clears what it returned from the ring, other room
   assert.deepEqual(ring.rooms, { other: ['x1'] })
 })
 
-test('socket mode leaves wake files alone', async t => {
+test('socket mode leaves wake files alone', socketOnly, async t => {
   const ring = await readWith(t, { AGENT_CHAT_WAKE_DIR: '' })
   assert.deepEqual(Object.keys(ring.rooms).sort(), ['other', 'r'])
 })

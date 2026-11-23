@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
 import { processIdentity } from './native-session.mjs'
+import { claudeEndpoint } from './test-platform.mjs'
 
 // 2.0.3: mail whose inbox result was the last thing a connection returned (read, then exit) came
 // back on the next connection as fresh. Now the conversation's transcript decides: an inbox
@@ -27,7 +28,7 @@ function fixture(t) {
   const own = service => (closers.push(() => service.close()), service)
   return { dir, stateRoot, root, profile, codexHome, store, own }
 }
-const claude = (f, extra = {}) => ({ runtime: 'claude', id: LAUNCH, profileHome: f.profile, endpoint: '/private/agent-chat-ac203.sock',
+const claude = (f, extra = {}) => ({ runtime: 'claude', id: LAUNCH, profileHome: f.profile, endpoint: claudeEndpoint('/private/agent-chat-ac203.sock'),
   clientPid: self.pid, clientStart: self.start, serverPid: self.pid, serverStart: self.start, ...extra })
 const codex = f => ({ runtime: 'codex', id: THREAD, profileHome: f.codexHome, serverPid: self.pid, serverStart: self.start })
 const service = (f, session, conversation = CONV) => createService({ store: f.store, env: {}, adapters: accepted, inferSession: () => session, resolveConversation: () => conversation })
@@ -36,7 +37,9 @@ const receiptOf = (f, agent, id) => f.store.memberships().find(m => m.agent === 
 async function readThenExit(f, session, conversation = CONV) {
   const peer = f.own(createService({ store: f.store, env: {}, adapters: accepted, inferSession: () => null }))
   await peer.call('join_room', { room: 'r', agent: 'Peer', session: { id: 'peer', runtime: 'manual' } })
-  const a = service(f, session, conversation)
+  // Owned, so a failed assertion below still closes it (an open service's folder watch keeps the
+  // test process alive).
+  const a = f.own(service(f, session, conversation))
   const { agent } = await a.call('join_room', { room: 'r', agent: 'Reader' })
   const sent = await peer.call('post', { room: 'r', from: 'Peer', to: agent, message: 'hello once' })
   const args = { room: 'r', agent }
@@ -125,7 +128,7 @@ test('Codex thread back on a new MCP connection: its rollout decides', async t =
   const again = await b.call('inbox', args)
   assert.equal(again.find(m => m.message_id === sent.message_id)?.maybe_seen, true, 'no rollout: marked')
   // A second message, read and then found in the rollout, counts as received.
-  const c = service(f, codex(f))
+  const c = f.own(service(f, codex(f)))
   const second = await peer.call('post', { room: 'r', from: 'Peer', to: args.agent, message: 'second' })
   const read = await c.call('inbox', args)
   c.written('inbox', args, read.filter(m => m.message_id === second.message_id)); c.close()

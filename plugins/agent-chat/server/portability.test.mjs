@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defaultChatRoot } from './store.mjs'
 import { distribution } from './distribution.mjs'
+import { symlinks } from './test-platform.mjs'
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 test('no shipped file pins one user home; the chat root follows the running home', () => {
@@ -15,7 +16,7 @@ test('no shipped file pins one user home; the chat root follows the running home
   assert.equal(defaultChatRoot(), path.join(os.homedir(), ...distribution.chatRoot))
 })
 
-test('Codex is found where its installers put it, and CODEX_HOME names the profile', async () => {
+test('Codex is found where its installers put it, and CODEX_HOME names the profile', symlinks, async () => {
   const { codexBinary, inferNativeSession } = await import('./native-session.mjs')
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-codex-')))
   try {

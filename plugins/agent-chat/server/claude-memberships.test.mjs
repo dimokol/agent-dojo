@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {createStore} from './store.mjs'
+import { linkFolder } from './test-platform.mjs'
 const A='00000000-0000-4000-8000-000000000001',B='00000000-0000-4000-8000-000000000002',C='00000000-0000-4000-8000-000000000003'
 function setup(t) {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'claude-restore-'))
@@ -70,7 +71,7 @@ function profiles(t,shared=true) {
   fs.mkdirSync(path.join(directory,'shared'))
   for(const home of homes) {
     fs.mkdirSync(home)
-    if(shared)fs.symlinkSync(path.join(directory,'shared'),path.join(home,'projects'))
+    if(shared)linkFolder(path.join(directory,'shared'),path.join(home,'projects'))
     else fs.mkdirSync(path.join(home,'projects'))
   }
   return homes

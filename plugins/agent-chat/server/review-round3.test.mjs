@@ -9,6 +9,7 @@ import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
 import { processIdentity } from './native-session.mjs'
 import { projectNoticeId } from './notices.mjs'
+import { claudeEndpoint, linkFolder } from './test-platform.mjs'
 
 // The third round of review on PR #6: each test fails without its fix.
 const UUID = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -19,7 +20,7 @@ function temp(t, tag) {
 }
 function linkedRoot(t, tag) {
   const dir = temp(t, tag), project = path.join(dir, 'project'), stateRoot = path.join(dir, 'state')
-  fs.mkdirSync(project); fs.mkdirSync(path.join(dir, 'real')); fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'link'))
+  fs.mkdirSync(project); fs.mkdirSync(path.join(dir, 'real')); linkFolder(path.join(dir, 'real'), path.join(dir, 'link'))
   const key = root => crypto.createHash('sha256').update(root + '\n' + fs.realpathSync(project)).digest('hex').slice(0, 24)
   const linked = path.join(dir, 'link', 'chats'), real = path.join(dir, 'real', 'chats')
   return { project, stateRoot, linked, real, projects: path.join(stateRoot, 'projects'), linkedKey: key(linked), realKey: key(real) }
@@ -54,7 +55,7 @@ test('S2: when both keys hold state, the resolved one is kept and the other is l
 
 test('S3: with the check off, a tab whose version can\'t be looked up still shows as wakeable', async t => {
   const dir = temp(t, 's3'), home = process.env.HOME, check = process.env.AGENT_CHAT_VERSION_CHECK
-  const child = spawn('sleep', ['60'], { stdio: 'ignore' }); t.after(() => child.kill())
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' }); t.after(() => child.kill())
   for (let i = 0; i < 50 && !processIdentity(child.pid); i++) await new Promise(resolve => setTimeout(resolve, 20))
   const client = processIdentity(child.pid)
   const store = createStore({ root: path.join(dir, 'chats'), projectRoot: dir }); store.createRoom({ room: 'room', title: 'room' })
@@ -70,11 +71,11 @@ test('S4: a process check that failed reads as unknown, not as another tab holdi
   const dir = temp(t, 's4'), profile = path.join(dir, 'profile'); fs.mkdirSync(profile, { mode: 0o700 })
   const self = processIdentity(process.pid), clients = []
   for (let n = 0; n < 2; n++) {
-    const child = spawn('sleep', ['60'], { stdio: 'ignore' }); t.after(() => child.kill())
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' }); t.after(() => child.kill())
     for (let i = 0; i < 50 && !processIdentity(child.pid); i++) await new Promise(resolve => setTimeout(resolve, 20))
     clients.push(processIdentity(child.pid))
   }
-  const tab = n => ({ runtime: 'claude', id: UUID(n), profileHome: profile, endpoint: `/private/tab${n}.sock`, clientPid: clients[n - 1].pid, clientStart: clients[n - 1].start, serverPid: self.pid, serverStart: self.start })
+  const tab = n => ({ runtime: 'claude', id: UUID(n), profileHome: profile, endpoint: claudeEndpoint(`/private/tab${n}.sock`), clientPid: clients[n - 1].pid, clientStart: clients[n - 1].start, serverPid: self.pid, serverStart: self.start })
   const options = { root: path.join(dir, 'chats'), stateRoot: path.join(dir, 'state'), projectRoot: dir }
   createStore(options).createRoom({ room: 'room', title: 'room' })
   const service = (session, isLive) => createService({ store: createStore(options), env: {}, adapters: { async deliver() { return { attempted: false, status: 'pending' } } },

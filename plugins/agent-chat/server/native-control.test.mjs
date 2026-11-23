@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { once } from 'node:events'
 import { createNativeControl, validateControlSocket } from './native-control.mjs'
 import { codexBinary } from './native-session.mjs'
+import { socketOnly } from './test-platform.mjs'
 
 const require = createRequire(import.meta.url)
 // Pre-install review may inject an audited copy explicitly. Production never
@@ -68,7 +69,7 @@ function standard(client, request) {
   if (request.method === 'thread/read') response(client, request, { thread: { id: ID, cwd: '/project', turns: ['private'] } })
 }
 
-test('private UDS alias, initialize, loaded list, and metadata read use only allowed RPCs', async t => {
+test('private UDS alias, initialize, loaded list, and metadata read use only allowed RPCs', socketOnly, async t => {
   const f = await fixture(t, standard)
   assert.equal(await f.control.loaded(f.session), true)
   assert.deepEqual(await f.control.read(f.session), { id: ID, cwd: '/project' })
@@ -81,14 +82,14 @@ test('private UDS alias, initialize, loaded list, and metadata read use only all
   assert.equal(validateControlSocket(f.home, f.advertised), f.socketPath)
 })
 
-test('direct socket is supported and absence is false', async t => {
+test('direct socket is supported and absence is false', socketOnly, async t => {
   const f = await fixture(t, (client, request) => {
     response(client, request, request.method === 'initialize' ? {} : { data: [], nextCursor: null })
   }, { alias: false })
   assert.equal(await f.control.loaded(f.session), false)
 })
 
-test('unmatched replies and notifications do not fulfill the request', async t => {
+test('unmatched replies and notifications do not fulfill the request', socketOnly, async t => {
   const f = await fixture(t, (client, request) => {
     client.send(JSON.stringify({ id: 999, result: { data: [ID] } }))
     client.send(JSON.stringify({ method: 'thread/status/changed', params: {} }))
@@ -97,14 +98,14 @@ test('unmatched replies and notifications do not fulfill the request', async t =
   assert.equal(await f.control.loaded(f.session), true)
 })
 
-test('bounded RPC silence rejects and terminates its socket', async t => {
+test('bounded RPC silence rejects and terminates its socket', socketOnly, async t => {
   const f = await fixture(t, () => {})
   const started = Date.now()
   await assert.rejects(f.control.loaded(f.session), /connection failed/)
   assert.ok(Date.now() - started < 1500)
 })
 
-test('errors, malformed responses, oversized frames, binary frames, and wrong thread metadata reject', async t => {
+test('errors, malformed responses, oversized frames, binary frames, and wrong thread metadata reject', socketOnly, async t => {
   for (const kind of ['error', 'json', 'oversized', 'binary', 'thread', 'pagination']) {
     await t.test(kind, async t => {
       const f = await fixture(t, (client, request) => {
@@ -122,7 +123,7 @@ test('errors, malformed responses, oversized frames, binary frames, and wrong th
   }
 })
 
-test('only the owned profile alias and private socket are authorized', async t => {
+test('only the owned profile alias and private socket are authorized', socketOnly, async t => {
   const f = await fixture(t, standard)
   for (const endpoint of ['ws://localhost:1234', f.socketPath, '/elsewhere.sock']) {
     assert.throws(() => validateControlSocket(f.home, endpoint), /Unexpected/)
@@ -134,7 +135,7 @@ test('only the owned profile alias and private socket are authorized', async t =
   assert.throws(() => validateControlSocket(f.home, f.advertised), /not private/)
 })
 
-test('failed and unexpected daemon discovery cannot initiate a control connection', async t => {
+test('failed and unexpected daemon discovery cannot initiate a control connection', socketOnly, async t => {
   const f = await fixture(t, standard)
   for (const stdout of ['bad', '{}', JSON.stringify({ status: 'running', socketPath: 'ws://localhost:9999' })]) {
     const control = createNativeControl({ WebSocket, executor: async () => ({ stdout }) })
@@ -147,7 +148,7 @@ test('failed and unexpected daemon discovery cannot initiate a control connectio
 })
 
 
-test('discovery strips Claude messaging credentials and socket routing', async t => {
+test('discovery strips Claude messaging credentials and socket routing', socketOnly, async t => {
   const f = await fixture(t, standard)
   const previous = Object.fromEntries(['CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_MESSAGING_SOCKET'].map(key => [key, process.env[key]]))
   t.after(() => { for (const [key, value] of Object.entries(previous)) {
@@ -162,7 +163,7 @@ test('discovery strips Claude messaging credentials and socket routing', async t
   assert.equal(f.calls[0].options.env.CODEX_HOME, f.home)
 })
 
-test('socket privacy is rechecked immediately before WebSocket construction', async t => {
+test('socket privacy is rechecked immediately before WebSocket construction', socketOnly, async t => {
   const f = await fixture(t, standard)
   const actualNow = Date.now
   let clockReads = 0, constructions = 0
@@ -181,7 +182,7 @@ test('socket privacy is rechecked immediately before WebSocket construction', as
 })
 
 
-test('inspect uses one discovery and metadata-only reads to distinguish unloaded from gone', async t => {
+test('inspect uses one discovery and metadata-only reads to distinguish unloaded from gone', socketOnly, async t => {
   const f = await fixture(t, standard)
   assert.deepEqual(await f.control.inspect(f.session), { loaded: true, exists: true, cwd: '/project' })
   assert.equal(f.calls.length, 1)
@@ -197,7 +198,7 @@ test('inspect uses one discovery and metadata-only reads to distinguish unloaded
   assert.deepEqual(absent.messages.map(message => message.method), ['initialize', 'initialized', 'thread/loaded/list', 'thread/read'])
 })
 
-test('production WebSocket resolution fails closed when the exact local dependency is missing', async t => {
+test('production WebSocket resolution fails closed when the exact local dependency is missing', socketOnly, async t => {
   const f = await fixture(t, standard)
   const localEntry = dependency
   const actualRealpath = fs.realpathSync
@@ -213,7 +214,7 @@ test('production WebSocket resolution fails closed when the exact local dependen
 })
 
 
-test('brief profile discovery cache never caches thread presence and expires without a timer', async t => {
+test('brief profile discovery cache never caches thread presence and expires without a timer', socketOnly, async t => {
   const f = await fixture(t, standard)
   let now = Date.now()
   t.mock.method(Date, 'now', () => now)
@@ -229,7 +230,7 @@ test('brief profile discovery cache never caches thread presence and expires wit
   assert.equal(f.messages.filter(message => message.method === 'thread/loaded/list').length, 3)
 })
 
-test('profile turn inventory reads status only and excludes prompts and turns',async t=>{
+test('profile turn inventory reads status only and excludes prompts and turns',socketOnly,async t=>{
  const f=await fixture(t,(client,request)=>{
   if(request.method==='initialize')response(client,request,{})
   if(request.method==='thread/loaded/list')response(client,request,{data:[ID],nextCursor:null})
@@ -239,7 +240,7 @@ test('profile turn inventory reads status only and excludes prompts and turns',a
  assert.deepEqual(f.messages.map(m=>m.method),['initialize','initialized','thread/loaded/list','thread/read'])
  assert.deepEqual(f.messages.at(-1).params,{threadId:ID,includeTurns:false})
 })
-test('profile inventory fails closed on unknown status and paginated presence',async t=>{
+test('profile inventory fails closed on unknown status and paginated presence',socketOnly,async t=>{
  for(const kind of ['unknown','pagination'])await t.test(kind,async t=>{
   const f=await fixture(t,(client,request)=>{
    if(request.method==='initialize')response(client,request,{})
@@ -266,7 +267,7 @@ test('stopped profile requires exact ENOENT discovery and absent alias',async t=
 })
 
 
-test('inspect finds persisted unloaded threads without a native load or subscription request', async t => {
+test('inspect finds persisted unloaded threads without a native load or subscription request', socketOnly, async t => {
   const f = await fixture(t, (client, request) => {
     if (request.method === 'thread/loaded/list') response(client, request, { data: [], nextCursor: null })
     else standard(client, request)
@@ -276,7 +277,7 @@ test('inspect finds persisted unloaded threads without a native load or subscrip
   assert.deepEqual(f.messages.at(-1).params, { threadId: ID, includeTurns: false })
 })
 
-test('storage errors and another thread missing never count as positive absence', async t => {
+test('storage errors and another thread missing never count as positive absence', socketOnly, async t => {
   for (const error of [
     { code: -32603, message: `thread not loaded: ${ID}` },
     { code: -32600, message: 'thread not loaded: another-thread' },

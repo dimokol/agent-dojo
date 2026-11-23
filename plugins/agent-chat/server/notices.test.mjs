@@ -9,6 +9,7 @@ import { createStore } from './store.mjs'
 import { claudeParticipantId, nameFiles } from './notice-files.mjs'
 import { computeNotices, syncNotices, syncNameCache, readNativeLabel, sessionUnreadLine, projectOrphanLine, dailyOrphanLine, projectNoticeId, noticeDirectory } from './notices.mjs'
 import { unreadReport } from './chat-queries.mjs'
+import { assertMode, posixModesOnly, WIN } from './test-platform.mjs'
 
 const NOW = Date.parse('2026-10-16T12:00:00Z'), H = 3600000
 const iso = ms => new Date(ms).toISOString()
@@ -47,7 +48,6 @@ function root(t) {
   const stateRoot = path.join(dir, 'state'); fs.mkdirSync(stateRoot, { mode: 0o700 })
   return { dir, stateRoot }
 }
-const mode = file => fs.statSync(file).mode & 0o777
 const stamp = file => { const s = fs.statSync(file); return [s.ino, s.mtimeMs] }
 
 test('notices list Claude sessions with unread in joined rooms, their gates and project orphans', () => {
@@ -66,8 +66,8 @@ test('sync writes private files atomically, only on change, and removes cleared 
   // A gate in the name used before notices were per project is dropped like a cleared one.
   fs.mkdirSync(dir, { mode: 0o700 }); fs.writeFileSync(path.join(dir, `session-${L2}.gate`), '', { mode: 0o600 })
   assert.deepEqual(syncNotices({ stateRoot, projectId, state, now: NOW, records }), { written: 4, removed: 1 })
-  assert.equal(mode(dir), 0o700)
-  for (const file of [unread, gate, path.join(dir, `session-${C1}.${projectId}.gate`), orphans]) assert.equal(mode(file), 0o600)
+  assertMode(dir, 0o700)
+  for (const file of [unread, gate, path.join(dir, `session-${C1}.${projectId}.gate`), orphans]) assertMode(file, 0o600)
   assert.equal(fs.existsSync(path.join(dir, `session-${L2}.gate`)), false, 'a closed session loses its gate')
   const before = [unread, gate, orphans].map(stamp)
   assert.deepEqual(syncNotices({ stateRoot, projectId, state, now: NOW + H, records }), { written: 0, removed: 0 })
@@ -82,7 +82,7 @@ test('sync writes private files atomically, only on change, and removes cleared 
   assert.deepEqual(fs.readdirSync(dir), [])
 })
 
-test('an unsafe notice directory is reported and nothing is written', t => {
+test('an unsafe notice directory is reported and nothing is written', posixModesOnly, t => {
   const { stateRoot } = root(t), { state, records } = fixture()
   fs.mkdirSync(noticeDirectory(stateRoot), { mode: 0o755 }); fs.chmodSync(noticeDirectory(stateRoot), 0o755)
   const result = syncNotices({ stateRoot, projectId: 'p', state, now: NOW, records })
@@ -104,8 +104,11 @@ test('readers return the one-line texts and never echo damaged content', t => {
   const file = path.join(noticeDirectory(stateRoot), `${ann}.proj.unread`)
   fs.writeFileSync(file, '{"schema":1,"rooms":[{"room":"\\u001b[31mSECRET","count":1}]}')
   assert.equal(sessionUnreadLine({ stateRoot, profileHome: PROFILE, conversationId: C1 }), null)
-  fs.writeFileSync(file, '{"schema":1,"rooms":[{"room":"setup","count":1}]}'); fs.chmodSync(file, 0o644)
-  assert.equal(sessionUnreadLine({ stateRoot, profileHome: PROFILE, conversationId: C1 }), null, 'a readable-by-others file is not trusted')
+  // POSIX mode bits only; on Windows the state folder's ACL keeps the notice files private.
+  if (!WIN) {
+    fs.writeFileSync(file, '{"schema":1,"rooms":[{"room":"setup","count":1}]}'); fs.chmodSync(file, 0o644)
+    assert.equal(sessionUnreadLine({ stateRoot, profileHome: PROFILE, conversationId: C1 }), null, 'a readable-by-others file is not trusted')
+  }
   assert.equal(sessionUnreadLine({ stateRoot, profileHome: PROFILE, conversationId: '../x' }), null)
   assert.equal(projectOrphanLine({ stateRoot: path.join(stateRoot, 'absent'), projectId: 'proj', now: NOW }), null)
 })
@@ -122,7 +125,7 @@ test('the name cache keeps canonical Claude names current and reads the widget n
   assert.deepEqual(syncNameCache({ stateRoot, state }), { written: 2, removed: 0 })
   assert.deepEqual(JSON.parse(fs.readFileSync(nameFiles(stateRoot, ann).name, 'utf8')), { schema: 1, name: 'Ann', source: 'explicit' })
   assert.equal(fs.existsSync(nameFiles(stateRoot, bob).name), false, 'only Claude sessions have a statusline')
-  assert.equal(mode(nameFiles(stateRoot, cat).name), 0o600)
+  assertMode(nameFiles(stateRoot, cat).name, 0o600)
   const before = stamp(nameFiles(stateRoot, ann).name)
   assert.deepEqual(syncNameCache({ stateRoot, state }), { written: 0, removed: 0 })
   assert.deepEqual(stamp(nameFiles(stateRoot, ann).name), before)
@@ -146,7 +149,7 @@ test('the orphan startup line shows at most once a day per project; the flag and
   assert.match(line(NOW + 24 * H), /closed sessions/)
   assert.equal(line(NOW + 25 * H), null)
   const marker = path.join(stateRoot, 'shown', 'orphans-proj')
-  assert.equal(mode(marker), 0o600); assert.equal(mode(path.dirname(marker)), 0o700)
+  assertMode(marker, 0o600); assertMode(path.dirname(marker), 0o700)
   fs.writeFileSync(marker, 'damaged')
   assert.match(line(NOW + 26 * H), /closed sessions/, 'an unreadable marker never hides the line')
   assert.match(projectOrphanLine({ stateRoot, projectId: 'proj', now: NOW }), /closed sessions/)

@@ -74,7 +74,7 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'macOS' }}
         working-directory: plugins/agent-chat
         # The suite tests the version gate, which the plugin ships switched off.
-        run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --test --test-concurrency=2 server/*.test.mjs
+        run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --import ./server/test-setup.mjs --test --test-concurrency=2 server/*.test.mjs
 
       - name: Test install.sh
         if: ${{ !cancelled() }}
@@ -85,3 +85,25 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'macOS' }}
         working-directory: plugins/storage-reclaim
         run: bash tests/run.sh
+
+  # agent-chat on Windows: the native helper (server/agent-chat-win.exe, built on a Mac with
+  # mingw-w64 by server/build-win.sh) plus the Node server. Not required yet while the port lands.
+  agent-chat-windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.15'
+      - name: Check the helper matches its recorded hash
+        working-directory: plugins/agent-chat/server
+        run: sha256sum -c agent-chat-win.sha256
+      - name: Test agent-chat
+        if: ${{ !cancelled() }}
+        working-directory: plugins/agent-chat
+        run: npm ci --ignore-scripts && AGENT_CHAT_VERSION_CHECK=on node --import ./server/test-setup.mjs --test --test-concurrency=2 --test-timeout=120000 server/*.test.mjs

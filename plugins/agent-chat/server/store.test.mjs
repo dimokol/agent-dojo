@@ -6,6 +6,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { createStore } from './store.mjs'
+import { assertMode, symlinks } from './test-platform.mjs'
 
 const moduleUrl = new URL('./store.mjs', import.meta.url).href
 const session = (id = 'thread-1') => ({ id, runtime: 'test', endpoint: 'test-only' })
@@ -79,8 +80,8 @@ test('membership, pending receipts and processing acknowledgements survive resta
   third.updateDelivery({ room: 'room', agent: 'Reader', sessionId: 'thread-1', message_ids: [post.message_id], status: 'failed' })
   assert.equal(third.deliveryStatus({ room: 'room' })[0].status, 'acked')
   assert.throws(() => third.ack({ room: 'room', agent: 'Reader', sessionId: 'other', message_ids: [post.message_id] }), /not joined/)
-  assert.equal(fs.statSync(third.statePath).mode & 0o777, 0o600)
-  assert.equal(fs.statSync(path.dirname(third.statePath)).mode & 0o777, 0o700)
+  assertMode(third.statePath, 0o600)
+  assertMode(path.dirname(third.statePath), 0o700)
 })
 
 test('session binding does not pretend registered sessions are live', (t) => {
@@ -146,7 +147,7 @@ test('legacy central bucket and canonical record format stay readable', (t) => {
   assert.equal(second.pending({ room: 'legacy', agent: 'Reader', sessionId: 'thread-1' }).length, 1)
 })
 
-test('rejects dot segments, prototype keys, symlink directories and symlink logs', (t) => {
+test('rejects dot segments, prototype keys, symlink directories and symlink logs', symlinks, (t) => {
   const { store, temp } = fixture(t)
   for (const room of ['.', '..', '__proto__', '../escape']) assert.throws(() => store.post({ room, from: 'Sender', message: 'bad' }), /invalid room/)
   const outside = path.join(temp, 'outside'); fs.mkdirSync(outside)
@@ -353,7 +354,7 @@ test('canonical-only workers share the normal room mutex and deduplicate without
   assert.equal(retried.duplicate, true)
 })
 
-test('canonical-only transcript failure still reports a durable post without resetting damaged metadata', t => {
+test('canonical-only transcript failure still reports a durable post without resetting damaged metadata', symlinks, t => {
   const { store, temp } = fixture(t)
   store.createRoom({ room: 'room', title: 'Room' })
   fs.writeFileSync(store.statePath, '{broken')

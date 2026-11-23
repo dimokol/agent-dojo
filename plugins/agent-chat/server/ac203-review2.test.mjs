@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createStore } from './store.mjs'
 import { createService } from './server.mjs'
 import { processIdentity } from './native-session.mjs'
+import { claudeEndpoint } from './test-platform.mjs'
 
 // ac203 second review round: bugs a second reviewer found by running the code.
 // 1. a tab that joined before its conversation registered, 2. /resume back to a conversation whose
@@ -26,7 +27,7 @@ function fixture(t, { now } = {}) {
   store.createRoom({ room: 'r', title: 'r' })
   const own = service => (closers.push(() => service.close()), service)
   const profile = n => { const p = path.join(dir, 'profile' + n); fs.mkdirSync(p, { recursive: true, mode: 0o700 }); return p }
-  const claude = (launch, home) => ({ runtime: 'claude', id: launch, profileHome: home, endpoint: '/private/agent-chat-ac203-review2.sock',
+  const claude = (launch, home) => ({ runtime: 'claude', id: launch, profileHome: home, endpoint: claudeEndpoint('/private/agent-chat-ac203-review2.sock'),
     clientPid: self.pid, clientStart: self.start, serverPid: self.pid, serverStart: self.start })
   const native = (session, conversation) => own(createService({ store, env: {}, adapters: accepted, inferSession: () => session,
     resolveConversation: typeof conversation === 'function' ? conversation : () => conversation }))

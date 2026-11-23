@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isVerifiedVersion, recordVerifiedVersion } from './claude-versions.mjs'
+import { assertMode, CAN_SYMLINK, WIN } from './test-platform.mjs'
 // These tests cover the version gate, which the plugin ships switched off; turn it on here so a
 // plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
 process.env.AGENT_CHAT_VERSION_CHECK = 'on'
@@ -29,7 +30,7 @@ test('audited default is allowed, unknown exact versions stay blocked, and reads
 test('successful receipt proof records only the exact version in a private allowlist', t => {
   const { stateRoot, file } = fixture(t)
   assert.deepEqual(recordVerifiedVersion('2.1.297', proof, { stateRoot }), { version: '2.1.297', verified: true })
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  assertMode(file, 0o600)
   assert.equal(isVerifiedVersion('2.1.297', { stateRoot }), true)
   assert.equal(isVerifiedVersion('2.1.298', { stateRoot }), false)
   const records = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -58,17 +59,23 @@ test('invalid records fail closed without exposing damaged content or resetting 
 test('directory and file permissions, symlinks and hardlinks are refused', t => {
   const { stateRoot, file } = fixture(t)
   recordVerifiedVersion('2.1.297', proof, { stateRoot })
-  fs.chmodSync(file, 0o644)
-  assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
-  fs.chmodSync(file, 0o600)
-  fs.chmodSync(stateRoot, 0o755)
-  assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
-  fs.chmodSync(stateRoot, 0o700)
+  // POSIX mode bits only; on Windows the state folder's ACL keeps the allowlist private.
+  if (!WIN) {
+    fs.chmodSync(file, 0o644)
+    assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
+    fs.chmodSync(file, 0o600)
+    fs.chmodSync(stateRoot, 0o755)
+    assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
+    fs.chmodSync(stateRoot, 0o700)
+  }
   const linked = path.join(stateRoot, 'link')
   fs.linkSync(file, linked)
   assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
   fs.unlinkSync(linked)
-  fs.renameSync(file, linked); fs.symlinkSync(linked, file)
-  assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
-  assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot: linked }), unavailable)
+  // A file symlink needs admin or Developer Mode on Windows.
+  if (CAN_SYMLINK) {
+    fs.renameSync(file, linked); fs.symlinkSync(linked, file)
+    assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot }), unavailable)
+    assert.throws(() => isVerifiedVersion('2.1.297', { stateRoot: linked }), unavailable)
+  }
 })

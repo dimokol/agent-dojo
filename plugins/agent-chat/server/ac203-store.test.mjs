@@ -8,6 +8,7 @@ import path from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createStore } from './store.mjs'
+import { posixModesOnly } from './test-platform.mjs'
 
 const SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'server.mjs')
 const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'claude-session-hook.mjs')
@@ -83,7 +84,7 @@ const looseFixture = (t, { dir = true, files = true } = {}) => {
 }
 const fix = dir => `chmod 700 '${dir}' && chmod 600 '${dir}'/*`
 for (const variant of [{ name: 'folder 0755 and files 0644', dir: true, files: true }, { name: 'folder 0755', dir: true, files: false }, { name: 'files 0644', dir: false, files: true }]) {
-  test(`a loose room (${variant.name}) is listed as damaged with its fix; other rooms keep working`, t => {
+  test(`a loose room (${variant.name}) is listed as damaged with its fix; other rooms keep working`, posixModesOnly, t => {
     const { store, bad } = looseFixture(t, variant)
     const rooms = store.listRooms()
     assert.ok(rooms.some(r => r.room === 'good' && r.messages === 1), JSON.stringify(rooms))
@@ -100,7 +101,7 @@ for (const variant of [{ name: 'folder 0755 and files 0644', dir: true, files: t
   })
 }
 
-test('over MCP, list_rooms lists a loose room as damaged and its own errors name the room and the fix', async t => {
+test('over MCP, list_rooms lists a loose room as damaged and its own errors name the room and the fix', posixModesOnly, async t => {
   const { root, bad, options } = looseFixture(t)
   execFileSync('git', ['init', '-q', options.projectRoot])
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CLAUDE_CODE_')))
@@ -121,7 +122,7 @@ test('over MCP, list_rooms lists a loose room as damaged and its own errors name
   void root
 })
 
-test('a loose rooms folder is still refused, and the tab is told at start which folder and how to fix it', t => {
+test('a loose rooms folder is still refused, and the tab is told at start which folder and how to fix it', posixModesOnly, t => {
   const { options } = looseFixture(t, { dir: false, files: false })
   execFileSync('git', ['init', '-q', options.projectRoot])
   const store = createStore(options)

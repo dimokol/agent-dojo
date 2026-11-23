@@ -3,13 +3,16 @@
 # StopFailure). It waits while the session is idle. When mail arrives, the server leaves a ring
 # file and writes a byte to this waiter's named pipe; the waiter prints the ring's wake text to
 # stderr and exits 2, which starts a turn. Exit 0 means nothing to do.
-# Idle cost on macOS: one blocked sh, about 1.3 MB and no CPU. Windows runs the Node waiter.
-# File layout: wake-ring.mjs next to this file.
-[ "$AGENT_CHAT_WAKE" = hook ] || exit 0
+# Idle cost on macOS: one blocked sh, about 1.3 MB and no CPU. Windows runs agent-chat-win.exe wake.
+# File layout: wake-ring.mjs and agent-chat-win.exe next to this file.
 case $(uname -s) in
-  MINGW*|MSYS*|CYGWIN*) command -v node >/dev/null 2>&1 || exit 0
+  # Windows always wakes through this hook: the native waiter (about 1 MB), else the Node one.
+  MINGW*|MSYS*|CYGWIN*)
+    [ -x "${0%/*}/agent-chat-win.exe" ] && exec "${0%/*}/agent-chat-win.exe" wake
+    command -v node >/dev/null 2>&1 || exit 0
     exec node "${0%/*}/wake-hook.mjs" ;;
 esac
+[ "$AGENT_CHAT_WAKE" = hook ] || exit 0
 pid=$CLAUDE_PID
 case $pid in ''|*[!0-9]*) exit 0 ;; esac
 kill -0 "$pid" 2>/dev/null || exit 0

@@ -6,10 +6,13 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 import { parseHello, HELLO_ENV, startDaemon } from './daemon.mjs'
+import { socketOnly } from './test-platform.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const daemonScript = path.join(here, 'daemon.mjs')
 const hasCompiler = spawnSync('cc', ['--version'], { stdio: 'ignore' }).status === 0
+// bridge.c and the daemon's Unix socket are macOS-only; Windows has agent-chat-win.exe and a pipe.
+const bridgeSkip = { skip: socketOnly.skip || (!hasCompiler && 'no C compiler') }
 
 test('hello: accepts the bridge fields and only the listed environment keys', () => {
   const ok = parseHello(JSON.stringify({ v: 1, pid: 4242, ppid: 4241, cwd: '/tmp', env: { CLAUDE_CODE_SESSION_ID: 'x', AGENT_CHAT_ROOT: '/r' } }))
@@ -66,7 +69,7 @@ function client(fx, cwd, extraEnv = {}, script = daemonScript) {
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-test('bridge and daemon: tabs in two projects share one daemon and each sees its own project', { skip: !hasCompiler && 'no C compiler' }, async () => {
+test('bridge and daemon: tabs in two projects share one daemon and each sees its own project', bridgeSkip, async () => {
   const fx = fixture()
   try {
     const one = client(fx, path.join(fx.root, 'one')), two = client(fx, path.join(fx.root, 'two'))
@@ -85,7 +88,7 @@ test('bridge and daemon: tabs in two projects share one daemon and each sees its
   } finally { fx.cleanup() }
 })
 
-test('bridge and daemon: a killed daemon is replaced and the tab keeps working', { skip: !hasCompiler && 'no C compiler' }, async () => {
+test('bridge and daemon: a killed daemon is replaced and the tab keeps working', bridgeSkip, async () => {
   const fx = fixture()
   try {
     const tab = client(fx, path.join(fx.root, 'one'))
@@ -100,7 +103,7 @@ test('bridge and daemon: a killed daemon is replaced and the tab keeps working',
   } finally { fx.cleanup() }
 })
 
-test('bridge and daemon: the tab environment reaches its service, and a start-up refusal reaches stderr', { skip: !hasCompiler && 'no C compiler' }, async () => {
+test('bridge and daemon: the tab environment reaches its service, and a start-up refusal reaches stderr', bridgeSkip, async () => {
   const fx = fixture()
   try {
     // A Claude session ID with no native parent: the service refuses with the native message,
@@ -117,7 +120,7 @@ test('bridge and daemon: the tab environment reaches its service, and a start-up
   } finally { fx.cleanup() }
 })
 
-test('daemon: a connection reset by a killed bridge still closes its service', async () => {
+test('daemon: a connection reset by a killed bridge still closes its service', socketOnly, async () => {
   const root = fs.mkdtempSync('/tmp/acd-'); fs.chmodSync(root, 0o700)
   for (const name of ['state', 'chats', 'proj']) fs.mkdirSync(path.join(root, name), { mode: 0o700 })
   execFileSync('git', ['init', '-q'], { cwd: path.join(root, 'proj') })
@@ -170,7 +173,7 @@ net.createServer(socket => {
 }).listen(socketPath)
 `
 
-test('bridge: a call the daemon never answered because it died gets an error, and only that call', { skip: !hasCompiler && 'no C compiler' }, async () => {
+test('bridge: a call the daemon never answered because it died gets an error, and only that call', bridgeSkip, async () => {
   const fx = fixture()
   const script = path.join(fx.root, 'crashing-daemon.mjs')
   fs.writeFileSync(script, CRASHING_DAEMON)
@@ -188,9 +191,9 @@ test('bridge: a call the daemon never answered because it died gets an error, an
   } finally { fx.cleanup() }
 })
 
-test('hook wake settings pass from the tab to the daemon, and bridge.c lists the same keys', () => {
+test('hook wake settings pass from the tab to the daemon, and bridge-core.h lists the same keys', () => {
   const env = { AGENT_CHAT_WAKE: 'hook', AGENT_CHAT_WAKE_DIR: '/w' }
   assert.deepEqual(parseHello(JSON.stringify({ v: 1, pid: 4242, ppid: 4241, cwd: '/tmp', env })).env, env)
-  const listed = /HELLO_ENV\[\] = \{([^}]*)\}/.exec(fs.readFileSync(new URL('./bridge.c', import.meta.url), 'utf8'))[1]
+  const listed = /HELLO_ENV\[\] = \{([^}]*)\}/.exec(fs.readFileSync(new URL('./bridge-core.h', import.meta.url), 'utf8'))[1]
   assert.deepEqual([...listed.matchAll(/"([A-Z_]+)"/g)].map(m => m[1]), HELLO_ENV)
 })

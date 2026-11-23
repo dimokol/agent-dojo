@@ -17,6 +17,7 @@ import { isVerifiedVersion, installedClaudeVersion } from './claude-versions.mjs
 import { ensureDirectory, safeFile, atomicJson, unsafeFolderLine, canonicalRoot, predictProjectDirectory } from './store-files.mjs'
 import { projectNoticeId, dailyOrphanLine, sessionUnreadLine, noticeDirectory } from './notices.mjs'
 import { claudeProfileHome, UUID, pruneHousekeeping, readShown, recordShown } from './notice-files.mjs'
+import { hasModeBits, ownedByMe } from './platform.mjs'
 
 const SCRIPT=fileURLToPath(import.meta.url)
 const stateRoot=process.env.AGENT_CHAT_STATE_ROOT || path.join(os.homedir(),'.local/state/agent-chat')
@@ -78,7 +79,7 @@ function markRestoreFailed(launch) {
 function restoreNotice() {
   const launch=process.env.CLAUDE_CODE_SESSION_ID
   if(!UUID.test(launch??''))return []
-  try {const stat=fs.lstatSync(restoreGateFile(stateRoot,launch));return stat.isFile()&&stat.uid===process.getuid()?[RESTORE_LINE]:[]}catch{return []}
+  try {const stat=fs.lstatSync(restoreGateFile(stateRoot,launch));return stat.isFile()&&ownedByMe(stat)?[RESTORE_LINE]:[]}catch{return []}
 }
 // "Checking" is true only before or during the one attempt; a failed attempt
 // is reported by the failure line and never retried automatically.
@@ -145,7 +146,7 @@ function unreadNotice(input) {
 export function unsafeChatRootLine(root=chatRoot) {
   try {
     const stat=fs.lstatSync(root)
-    if(stat.isDirectory()&&!stat.isSymbolicLink()&&stat.uid===process.getuid()&&!(stat.mode&0o077))return []
+    if(stat.isDirectory()&&!stat.isSymbolicLink()&&ownedByMe(stat)&&!hasModeBits(stat, 0o077))return []
   } catch {return []}
   return [unsafeFolderLine(root)]
 }
@@ -159,7 +160,7 @@ export function unsafeProjectLines(projectRoot,root=chatRoot) {
     for(const folder of [dir,path.join(dir,'rooms')]) {
       let stat
       try {stat=fs.lstatSync(folder)}catch{continue}
-      if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||stat.mode&0o077)return [unsafeFolderLine(folder)]
+      if(!stat.isDirectory()||stat.isSymbolicLink()||!ownedByMe(stat)||hasModeBits(stat, 0o077))return [unsafeFolderLine(folder)]
     }
   } catch {}
   return []

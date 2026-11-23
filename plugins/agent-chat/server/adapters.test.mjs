@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { createAdapters, validateSession, runProcess } from './adapters.mjs'
+import { socketOnly, WIN } from './test-platform.mjs'
 // These tests cover the version gate, which the plugin ships switched off; turn it on here so a
 // plain `node --test` passes too. Read at call time, so setting it after the imports is enough.
 process.env.AGENT_CHAT_VERSION_CHECK = 'on'
@@ -59,7 +60,7 @@ test('Codex queues one deduplicated content-free notification using argv and no 
   assert.equal(call.args[2], ID)
   assert.equal(call.args[3], '--message')
   assert.equal(call.args.length, 5)
-  assert.match(call.file, /\/codex$/)
+  assert.match(call.file, WIN ? /\\codex$/ : /\/codex$/)
   assert.equal(call.options.timeoutMs, 37)
   assert.ok(!('CLAUDE_CODE_MESSAGING_TOKEN' in call.options.env))
   assert.ok(!('CLAUDE_CODE_MESSAGING_SOCKET' in call.options.env))
@@ -116,7 +117,7 @@ test('in-flight calls are bounded globally and for the same registered session',
   assert.equal((await adapter.deliver(input())).status, 'accepted')
 })
 
-test('socket and profile paths reject symlinks and non-socket targets', async t => {
+test('socket and profile paths reject symlinks and non-socket targets', socketOnly, async t => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-path-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const file = path.join(dir, 'ordinary')
@@ -140,7 +141,7 @@ test('socket and profile paths reject symlinks and non-socket targets', async t 
   assert.equal(calls.at(-1).options.env.CODEX_HOME, dir)
 })
 
-test('verified Claude schema writes a peer frame but never claims receiver acceptance', async t => {
+test('verified Claude schema writes a peer frame but never claims receiver acceptance', socketOnly, async t => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-uds-'))
   const endpoint = path.join(dir, 'peer.sock')
   let received
@@ -181,7 +182,7 @@ test('a fake child is stopped by the process timeout with no runtime inference',
   assert.equal(result.timedOut, true)
 })
 
-test('a socket that never connects times out without consuming its durable messages', async t => {
+test('a socket that never connects times out without consuming its durable messages', socketOnly, async t => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-timeout-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const socket = new EventEmitter()
@@ -195,7 +196,7 @@ test('a socket that never connects times out without consuming its durable messa
   assert.equal(destroyed, true)
 })
 
-test('Codex uses a registered socket only if queue help advertises the remote flag', async t => {
+test('Codex uses a registered socket only if queue help advertises the remote flag', socketOnly, async t => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-remote-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const endpoint = path.join(dir, 'gone.sock')
@@ -212,7 +213,7 @@ test('Codex uses a registered socket only if queue help advertises the remote fl
   }
 })
 
-test('Claude version changes, missing endpoints and unreachable sockets preserve messages', async t => {
+test('Claude version changes, missing endpoints and unreachable sockets preserve messages', socketOnly, async t => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-missing-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   let connected = false
@@ -248,7 +249,7 @@ test('capacity completion drains five recipients without another post', async ()
   assert.ok(results.every(result => result.status === 'accepted'))
 })
 
-test('an unverified Claude update is paused visibly without repeated version subprocesses',async()=>{
+test('an unverified Claude update is paused visibly without repeated version subprocesses',socketOnly,async()=>{
   let calls=0
   const adapters=createAdapters({requireProcessIdentity:false,executor:async()=>{calls++;return {code:0,stdout:'2.1.999 (Claude Code)\n'}}})
   for(let i=0;i<3;i++) {
@@ -276,7 +277,7 @@ test('deadline cancellation prevents a later queue send after delayed capability
 
 // Seen 2026-10-19: after an update the installed CLI is unverified for a
 // while, but tabs started earlier still run their verified version.
-test('the receiving tab\'s own version decides wake-ups, not the newly installed CLI', async t => {
+test('the receiving tab\'s own version decides wake-ups, not the newly installed CLI', socketOnly, async t => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'adapter-running-'))
   const endpoint = path.join(dir, 'peer.sock')
   const server = net.createServer(socket => socket.resume())

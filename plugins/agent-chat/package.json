@@ -1,13 +1,13 @@
 {
   "name": "agent-chat",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=24.15.0"
   },
   "scripts": {
-    "test": "AGENT_CHAT_VERSION_CHECK=on node --test server/*.test.mjs"
+    "test": "AGENT_CHAT_VERSION_CHECK=on node --import ./server/test-setup.mjs --test server/*.test.mjs"
   },
   "dependencies": {
     "ws": "8.21.3"

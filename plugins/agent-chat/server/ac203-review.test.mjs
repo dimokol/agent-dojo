@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createStore } from './store.mjs'
 import { createService, ALLOWED_ERROR } from './server.mjs'
 import { processIdentity } from './native-session.mjs'
+import { claudeEndpoint } from './test-platform.mjs'
 
 // ac203 review round: bugs an independent reviewer found by running the code.
 // 1. /clear (and /resume) inside one MCP process, 2. one loose room blocking a takeover,
@@ -24,7 +25,7 @@ function fixture(t) {
   const store = createStore({ root, projectRoot: dir, stateRoot })
   store.createRoom({ room: 'r', title: 'r' })
   const own = service => (closers.push(() => service.close()), service)
-  const claude = (extra = {}) => ({ runtime: 'claude', id: L1, profileHome: profile, endpoint: '/private/agent-chat-ac203-review.sock',
+  const claude = (extra = {}) => ({ runtime: 'claude', id: L1, profileHome: profile, endpoint: claudeEndpoint('/private/agent-chat-ac203-review.sock'),
     clientPid: self.pid, clientStart: self.start, serverPid: self.pid, serverStart: self.start, ...extra })
   const native = (session, conversation, extra = {}) => own(createService({ store, env: {}, adapters: accepted, inferSession: () => session,
     resolveConversation: typeof conversation === 'function' ? conversation : () => conversation, ...extra }))

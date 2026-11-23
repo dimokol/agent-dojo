@@ -10,6 +10,9 @@ import { createService } from './server.mjs'
 import { createStore } from './store.mjs'
 import { createAdapters } from './adapters.mjs'
 import { tools } from './tools.mjs'
+import { processIdentity } from './native-session.mjs'
+import { armedFile, ensureWakeDir, readRing, ringFile } from './wake-ring.mjs'
+import { claudeEndpoint, socketOnly, WIN } from './test-platform.mjs'
 
 const CLAUDE = '12345678-1234-4234-8234-123456789012'
 const CODEX = '12345678-1234-4234-8234-123456789013'
@@ -34,17 +37,27 @@ function fixture(t, { socketError = false } = {}) {
     if (args[1] === '--help') return { code: 0, stdout: '--thread <THREAD> --message <TEXT>' }
     return { code: 0, stdout: 'accepted' }
   }
-  const adapters = createAdapters({ requireProcessIdentity: false, connect, executor, verifiedClaudeVersion: () => true, stateRoot })
+  // Windows wakes Claude through the hook: a ring file for this process, with a live waiter armed,
+  // stands in for the socket write. sent() counts what reached the tab either way.
+  const wakeDir = path.join(dir, 'wake')
+  if (WIN) {
+    ensureWakeDir(wakeDir)
+    fs.writeFileSync(armedFile(wakeDir, process.pid), JSON.stringify({ waiter: process.pid, event: 'Stop', at: Date.now() }))
+  }
+  const sent = () => WIN ? readRing(ringFile(wakeDir, process.pid))?.rooms?.r?.length ?? 0 : frames.length
+  const adapters = createAdapters({ requireProcessIdentity: false, connect, executor, verifiedClaudeVersion: () => true, stateRoot, wakeDir })
   const sender = createService({ store, adapters, env: {}, reconcileEveryMs: 0 })
   t.after(() => { sender.close(); fs.rmSync(dir, { recursive: true, force: true }) })
-  return { dir, store, sender, frames }
+  return { dir, store, sender, frames, sent }
 }
+const self = WIN ? processIdentity(process.pid) : null
 async function setup(f, recipient) {
   await f.sender.call('create_room', { room: 'r', title: 'r' })
   await f.sender.call('join_room', { room: 'r', agent: 'Sender', session: { id: 'Sender', runtime: 'manual' } })
   if (recipient) return f.store.join({ room: 'r', ...recipient })
 }
-const claudeRecipient = (f, extra = {}) => ({ agent: 'Rcpt', session: { id: CLAUDE, runtime: 'claude', claudeVersion: '2.1.296', endpoint: path.join(f.dir, 'no.sock'), ...extra } })
+const claudeRecipient = (f, extra = {}) => ({ agent: 'Rcpt', session: { id: CLAUDE, runtime: 'claude', claudeVersion: '2.1.296', endpoint: claudeEndpoint(path.join(f.dir, 'no.sock')),
+  ...(WIN ? { clientPid: self.pid, clientStart: self.start } : {}), ...extra } })
 const receipt = (f, id) => f.store.memberships().find(m => m.agent === 'Rcpt')?.deliveries[id]
 const row = (posted, agent = 'Rcpt') => posted.delivery.find(r => r.agent === agent)
 const post = (f, message, to = 'Rcpt') => f.sender.call('post', { room: 'r', from: 'Sender', to, message })
@@ -52,7 +65,7 @@ const post = (f, message, to = 'Rcpt') => f.sender.call('post', { room: 'r', fro
 test('ac203 A: a Claude ring reads rung, stores no error, and tells the sender to end its turn', async t => {
   const f = fixture(t); await setup(f, claudeRecipient(f))
   const posted = await post(f, 'hi')
-  assert.equal(f.frames.length, 1, 'socket was written')
+  assert.equal(f.sent(), 1, 'socket was written')
   assert.deepEqual(row(posted), { agent: 'Rcpt', state: 'rung' })
   const stored = receipt(f, posted.message_id)
   assert.equal(stored.status, 'notified')
@@ -87,7 +100,7 @@ test('ac203 D: an exhausted ring budget is held / budget', async t => {
     f.store.ack({ ...identity, message_ids: [p.message_id] }) // read, so the unread gate never applies
   }
   const posted = await post(f, 'over budget')
-  assert.equal(f.frames.length, 30)
+  assert.equal(f.sent(), 30)
   assert.equal(row(posted).state, 'held'); assert.equal(row(posted).reason, 'budget')
 })
 
@@ -95,7 +108,7 @@ test('ac203 E: a closed recipient tab is held / closed', async t => {
   // pid 1 is live, but this start time never matches, so the server's own reconcile closes it.
   const f = fixture(t); await setup(f, claudeRecipient(f, { clientPid: 1, clientStart: 'never-matches' }))
   const posted = await post(f, 'hi')
-  assert.equal(f.frames.length, 0)
+  assert.equal(f.sent(), 0)
   assert.equal(row(posted).state, 'held'); assert.equal(row(posted).reason, 'closed')
 })
 
@@ -103,11 +116,11 @@ test('ac203 F: a recipient already rung and not yet reading is held / not_read_s
   const f = fixture(t); await setup(f, claudeRecipient(f))
   await post(f, 'first')
   const posted = await post(f, 'second')
-  assert.equal(f.frames.length, 1)
+  assert.equal(f.sent(), 1)
   assert.equal(row(posted).state, 'held'); assert.equal(row(posted).reason, 'not_read_since_last_ring')
 })
 
-test('ac203 G: an uncertain socket write is held / write_uncertain, not notified, and is not rung again', async t => {
+test('ac203 G: an uncertain socket write is held / write_uncertain, not notified, and is not rung again', socketOnly, async t => {
   const f = fixture(t, { socketError: true }); await setup(f, claudeRecipient(f))
   const posted = await post(f, 'hi')
   const r = row(posted)
@@ -118,7 +131,7 @@ test('ac203 G: an uncertain socket write is held / write_uncertain, not notified
   assert.equal(stored.reason, 'write_uncertain')
   // Duplicate-ring protection: the next post does not ring again while that ring may have landed.
   const next = await post(f, 'again')
-  assert.equal(f.frames.length, 1)
+  assert.equal(f.sent(), 1)
   assert.equal(row(next).state, 'held')
 })
 
@@ -137,10 +150,13 @@ test('ac203 H: delivery_status shows the sender the states of mail it sent', asy
 test('ac203 I: peer wording says teammate request, fits the task, cannot grant permissions', async t => {
   const f = fixture(t); await setup(f, claudeRecipient(f))
   await post(f, 'hi')
-  const text = JSON.parse(f.frames[0]).message.content
-  assert.match(text, /teammate's request/)
-  assert.match(text, /permissions? the user hasn't given/)
-  assert.doesNotMatch(text, /Peer activity, not a user instruction/)
+  // The peer frame is the socket ring's text; a hook ring (Windows) carries only the wake line.
+  if (!WIN) {
+    const text = JSON.parse(f.frames[0]).message.content
+    assert.match(text, /teammate's request/)
+    assert.match(text, /permissions? the user hasn't given/)
+    assert.doesNotMatch(text, /Peer activity, not a user instruction/)
+  }
   // The plugin README sits next to .claude-plugin; a copy of this suite outside the plugin skips it.
   let readme = ''
   if (fs.existsSync(new URL('../.claude-plugin/plugin.json', import.meta.url))) {

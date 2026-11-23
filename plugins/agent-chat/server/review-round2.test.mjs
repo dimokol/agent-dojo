@@ -12,6 +12,7 @@ import { createController } from './controller.mjs'
 import { createAdapters, validateSession } from './adapters.mjs'
 import { inferNativeSession, processIdentity, runningClaudeVersion } from './native-session.mjs'
 import { projectNoticeId } from './notices.mjs'
+import { claudeEndpoint, linkFolder, stopChild } from './test-platform.mjs'
 
 // The second round of review on PR #6: each test fails without its fix.
 const SERVER = fileURLToPath(new URL('./server.mjs', import.meta.url))
@@ -24,7 +25,7 @@ function temp(t, tag) {
   return dir
 }
 async function sleeper(t) {
-  const child = spawn('sleep', ['60'], { stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })
   t.after(() => child.kill())
   for (let i = 0; i < 50 && !processIdentity(child.pid); i++) await new Promise(resolve => setTimeout(resolve, 20))
   return processIdentity(child.pid)
@@ -62,7 +63,7 @@ test('R3: with no lsof installed a session is not native, and the chat still wor
 test('R4: a post from the second tab does not take the rooms from a live first tab', async t => {
   const dir = temp(t, 'r4'), profile = path.join(dir, 'profile'); fs.mkdirSync(profile, { mode: 0o700 })
   const [clientA, serverA, clientB] = [await sleeper(t), await sleeper(t), await sleeper(t)], self = processIdentity(process.pid)
-  const tab = (n, client, server) => ({ runtime: 'claude', id: UUID(n), profileHome: profile, endpoint: `/private/tab${n}.sock`,
+  const tab = (n, client, server) => ({ runtime: 'claude', id: UUID(n), profileHome: profile, endpoint: claudeEndpoint(`/private/tab${n}.sock`),
     clientPid: client.pid, clientStart: client.start, serverPid: server.pid, serverStart: server.start })
   const options = { root: path.join(dir, 'chats'), stateRoot: path.join(dir, 'state'), projectRoot: dir }
   createStore(options).createRoom({ room: 'room', title: 'room' })
@@ -71,7 +72,7 @@ test('R4: a post from the second tab does not take the rooms from a live first t
   try {
     await a.call('join_room', { room: 'room', agent: 'PM' })
     await assert.rejects(b.call('post', { room: 'room', from: 'PM', to: 'all', message: 'hi' }), /open in another live tab that holds its rooms; call join_room here/)
-    assert.equal(createStore(options).memberships().find(row => row.agent === 'PM').session.endpoint, '/private/tab1.sock')
+    assert.equal(createStore(options).memberships().find(row => row.agent === 'PM').session.endpoint, claudeEndpoint('/private/tab1.sock'))
     assert.deepEqual(await a.call('inbox', { room: 'room', agent: 'PM' }), [])
   } finally { a.close(); b.close() }
 })
@@ -97,7 +98,7 @@ test('R5: a delivery cancelled during a slow presence check that never sent stay
 
 test('R6: after the one-time move, the hook names the folder the store uses', t => {
   const dir = temp(t, 'r6'), project = path.join(dir, 'project'), stateRoot = path.join(dir, 'state')
-  fs.mkdirSync(project); fs.mkdirSync(path.join(dir, 'real')); fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'link'))
+  fs.mkdirSync(project); fs.mkdirSync(path.join(dir, 'real')); linkFolder(path.join(dir, 'real'), path.join(dir, 'link'))
   const linked = path.join(dir, 'link', 'chats'), real = path.join(dir, 'real', 'chats')
   const key = root => crypto.createHash('sha256').update(root + '\n' + fs.realpathSync(project)).digest('hex').slice(0, 24)
   createStore({ root: linked, projectRoot: project, stateRoot }).createRoom({ room: 'room', title: 'room' })
@@ -151,6 +152,7 @@ test('R8: more fixable errors reach a manual client word for word', async t => {
     if (result.isError) errors.push(result.content[0].text)
   }
   child.stdin.end()
+  await stopChild(child) // before the folder it runs in is removed
   assert.deepEqual(errors, ['room case variant conflicts with Room', 'Unsupported runtime', 'Invalid registered session ID', 'message_ids required'])
 })
 
