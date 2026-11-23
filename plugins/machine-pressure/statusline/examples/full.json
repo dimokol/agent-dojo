@@ -1,0 +1,7 @@
+{
+  "separator": " | ",
+  "lines": [
+    ["model", "agent-chat", "effort", "context", "session-tokens", "five-hour", "five-hour-reset", "week", "week-reset", "branch"],
+    ["pressure"]
+  ]
+}

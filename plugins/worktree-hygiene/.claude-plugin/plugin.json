@@ -1,11 +1,11 @@
 {
   "name": "worktree-hygiene",
-  "version": "0.1.0",
-  "description": "A read-only audit to run at session start: free disk, merged-PR worktrees, idle dependency folders and orphaned dev servers. Proposes removals, never deletes.",
+  "version": "0.2.0",
+  "description": "An audit to run at session start: free disk, merged-PR worktrees, idle dependency folders and orphaned dev servers. Proposes removals; an opt-in hook removes merged, clean, idle worktrees on its own.",
   "author": { "name": "dimokol" },
   "repository": "https://github.com/dimokol/agent-dojo",
   "license": "MIT",
-  "keywords": ["worktrees", "disk", "cleanup", "audit", "git"],
+  "keywords": ["worktrees", "disk", "cleanup", "audit", "git", "hooks"],
   "userConfig": {
     "worktree_filter": {
       "type": "string",
@@ -18,6 +18,25 @@
       "title": "Dev server pattern",
       "description": "Extended regex matched against process commands to find orphaned dev servers.",
       "default": "next dev|vite|webpack|node --watch|nodemon"
+    },
+    "auto_sweep": {
+      "type": "boolean",
+      "title": "Remove merged worktrees on session start",
+      "description": "When on, a SessionStart hook removes clean, idle worktrees whose commits are on the remote, and local branches already on the remote, at most once an hour. Off: nothing is deleted without you.",
+      "default": false
+    },
+    "sweep_roots": {
+      "type": "string",
+      "multiple": true,
+      "title": "Sweep folders",
+      "description": "Folders searched, 5 levels deep, for repos to sweep. Empty: only the repo the session starts in.",
+      "default": []
+    },
+    "sweep_idle_min": {
+      "type": "number",
+      "title": "Sweep idle minutes",
+      "description": "A worktree with a file changed more recently than this is kept.",
+      "default": 120
     }
   }
 }

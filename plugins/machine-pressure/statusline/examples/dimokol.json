@@ -1,0 +1,20 @@
+{
+  "separator": " | ",
+  "colors": { "separator": 59 },
+  "loadLog": true,
+  "lines": [
+    [
+      { "type": "model", "color": 30 },
+      { "type": "agent-chat", "color": 188 },
+      { "type": "effort", "color": 96, "fallback": "default" },
+      { "type": "context", "color": 59 },
+      { "type": "session-tokens", "color": 178 },
+      { "type": "five-hour", "color": 111 },
+      { "type": "five-hour-reset", "color": 111 },
+      { "type": "week", "color": 111 },
+      { "type": "week-reset", "color": 111 },
+      { "type": "branch", "color": 96 }
+    ],
+    ["pressure"]
+  ]
+}

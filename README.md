@@ -33,6 +33,7 @@ Skills only, for Codex and other agents: `npx skills add dimokol/agent-dojo`.
 - Four agents start four test suites, and the laptop swaps until nothing responds.
 - Two agents in two terminals guess the same field name differently.
 - Merged worktrees, idle `node_modules` folders and orphaned dev servers fill the disk.
+- Ten open tabs each run their own status line processes and MCP servers, and the machine swaps.
 - An agent rebuilds something that already merged on the trunk.
 - A PR goes up with review findings nobody applied or answered.
 
@@ -45,9 +46,10 @@ is a five-minute read.
 |---|---|---|
 | [git-guardrails](plugins/git-guardrails) | Agents can't merge PRs, push to protected branches, delete remote branches or run `reset --hard` unless you said so. Strict mode also gates every commit and push. | hooks |
 | [pr-task-link-guard](plugins/pr-task-link-guard) | `gh pr create` is refused when the body has no link to a task, once you set a task-link pattern. | hook |
-| [machine-pressure](plugins/machine-pressure) | Refuses a second e2e or Docker run, and heavy commands while CPU, memory or disk is in the red, plus a statusline script you add by hand. | hook, script |
+| [machine-pressure](plugins/machine-pressure) | Refuses a second e2e or Docker run, and heavy commands while CPU, memory or disk is in the red. Its shared status line renders every tab from one process: 10 to 40 ms and 4.6 MB per render instead of about 1 s and 93 MB. | hook, script |
+| [lazy-mcp](plugins/lazy-mcp) | Starts a stdio MCP server on its first tool call. Until then a 2 MB shim answers for it, instead of 25 to 100 MB per server in every tab. | skill, script |
 | [context-nudge](plugins/context-nudge) | One line when a session passes 250k, 400k and 600k tokens, or after an hour idle at 150k or more, so you compact or start fresh. | hook |
-| [worktree-hygiene](plugins/worktree-hygiene) | An audit to run at session start: merged worktrees, idle dependency folders, orphaned dev servers, free disk. Proposes, never deletes. | skill |
+| [worktree-hygiene](plugins/worktree-hygiene) | An audit to run at session start: merged worktrees, idle dependency folders, orphaned dev servers, free disk. Proposes, never deletes. An opt-in hook removes merged, clean, idle worktrees on its own. | skill, hook |
 | [storage-reclaim](plugins/storage-reclaim) | Disk cleanup that opens with the biggest safe wins and a one-word "rec", and won't touch what a process or another session is using. macOS. Bundles disk-map, a treemap for any disk. | skills |
 | [agent-chat](plugins/agent-chat) | Agents in different terminals message each other, and a message wakes the idle Claude Code or Codex session it's for. Mail waits for closed sessions. | MCP server, hooks |
 | [verify-before-building](plugins/verify-before-building) | Fetches and checks the trunk before you branch, so nobody rebuilds what already merged. | skill |

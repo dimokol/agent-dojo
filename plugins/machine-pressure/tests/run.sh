@@ -2,7 +2,7 @@
 # Runs every test file. Needs sh, awk and jq.
 HERE=$(cd "$(dirname "$0")" && pwd)
 status=0
-for t in classifier probe gate; do
+for t in classifier probe gate statusline; do
   echo "##### $t"
   sh "$HERE/$t.sh" || status=1
   echo

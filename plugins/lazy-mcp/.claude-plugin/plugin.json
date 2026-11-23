@@ -1,0 +1,9 @@
+{
+  "name": "lazy-mcp",
+  "version": "0.1.0",
+  "description": "Starts a stdio MCP server only when one of its tools is called, so servers most sessions never use stop costing memory in every tab.",
+  "author": { "name": "dimokol" },
+  "repository": "https://github.com/dimokol/agent-dojo",
+  "license": "MIT",
+  "keywords": ["mcp", "memory", "performance", "multi-agent"]
+}
