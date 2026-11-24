@@ -91,9 +91,19 @@ export function createService({ store, sync = null, proc = ownProcess(), adapter
   const deliveryView = rows => rows.map(({ agent, state, reason, detail }) => ({ agent, state, ...(state === 'held' ? { reason, ...(detail ? { detail } : {}) } : {}) }))
   const senderNote = 'End your turn; a reply wakes you.'
   // Shared rooms (synced through the hub). Errors here carry fixed texts the caller can act on.
+  // sync is the hub engine, or a function that finds it: then a tab opened before this machine was
+  // paired picks the pairing up on its next shared-room call, without a reconnect.
+  const findSync = typeof sync === 'function' ? sync : null
+  let engine = findSync ? null : sync
+  const currentSync = () => {
+    if (!engine && findSync) { engine = findSync(); engine?.addProject(store.projectRoot, store).catch(() => {}) }
+    return engine
+  }
+  currentSync()
   const sharedError = text => Object.assign(new Error(text), { code: 'CHAT_SHARED' })
   const hubDown = error => sharedError(`The agent-chat hub is unreachable or refused (${String(error?.message ?? error).slice(0, 120)}). Local rooms still work, and posts to shared rooms wait in this machine's outbox.`)
   const sharedProject = async () => {
+    const sync = currentSync()
     if (!sync) throw sharedError('Shared rooms need this machine paired with an agent-chat hub (node device.mjs pair <invite code>) and the agent-chat daemon.')
     const project = await sync.addProject(store.projectRoot, store)
     if (!project) throw sharedError("This project has no git origin (or projects.json override), so its rooms can't be shared across devices.")
@@ -106,7 +116,7 @@ export function createService({ store, sync = null, proc = ownProcess(), adapter
     if (!shared) return
     try {
       const project = await sharedProject()
-      await sync.reserve(project, room, { alias: member.agent, participant: String(member.participant_id ?? ''), joined: true, runtime: member.session?.runtime ?? '' })
+      await currentSync().reserve(project, room, { alias: member.agent, participant: String(member.participant_id ?? ''), joined: true, runtime: member.session?.runtime ?? '' })
     } catch (error) {
       try { store.leave({ room, agent: member.agent, sessionId: member.session.id, participantId: member.participant_id }) } catch {}
       for (const [bindingKey, value] of [...bindings]) if (JSON.parse(bindingKey)[0] === room && value.participantId === member.participant_id) bindings.delete(bindingKey)
@@ -120,6 +130,7 @@ export function createService({ store, sync = null, proc = ownProcess(), adapter
     if (!store.sharedRoom(room)) return []
     const remote = store.remoteMembers(room)
     const targets = isBroadcast(to) ? remote.filter(row => row.joined) : remote.filter(row => row.alias.toLowerCase() === String(to).toLowerCase())
+    const sync = currentSync()
     return targets.map(row => ({ agent: row.alias, device: row.device_name, ...(sync ? sync.outlook(row.device) : { state: 'queued', detail: 'in the outbox; this machine syncs only while the agent-chat daemon runs' }) }))
   }
   // A ps of every member on every call was the costliest part of a call, so a pass runs at most
@@ -572,7 +583,7 @@ export function createService({ store, sync = null, proc = ownProcess(), adapter
           const room = store.roomIdFor(plain)
           if (store.listRooms().some(row => row.room?.toLowerCase() === room.toLowerCase())) throw new Error('room already exists')
           const project = await sharedProject()
-          try { await sync.createRoom(project, room, plain.title.trim()) }
+          try { await currentSync().createRoom(project, room, plain.title.trim()) }
           catch (error) { if (error.status === 409) throw sharedError(`A shared room named ${room} already exists in this project; join it instead.`); throw hubDown(error) }
           return { room, title: plain.title.trim(), shared: true }
         }
@@ -693,7 +704,7 @@ export function createService({ store, sync = null, proc = ownProcess(), adapter
         case 'members': {
           const rows = await memberReport(args.room)
           if (!store.sharedRoom(args.room)) return rows
-          const here = sync?.device?.name ?? 'this machine'
+          const sync = currentSync(), here = sync?.device?.name ?? 'this machine'
           return [...rows.map(row => ({ ...row, device: here })), ...store.remoteMembers(args.room).map(row => ({ name: row.alias, device: row.device_name, runtime: row.runtime,
             joined: row.joined, status: row.joined ? 'joined' : 'closed', wakeable: row.joined && sync?.outlook(row.device).state === 'sent' }))]
         }
@@ -781,9 +792,8 @@ export async function openConnection({ env = process.env, proc = ownProcess(), s
   if (wakeMode(env) === 'hook') sweepWakeFilesSoon(env)
   // Only the shared daemon syncs with a hub (one engine per state root, behind the sync lock).
   // Without a pairing there is no engine and nothing leaves the machine.
-  let sync = null
-  if (withSync) try { sync = syncFor({ stateRoot: store.stateRoot, chatRoot: root }) } catch {}
-  sync?.addProject(store.projectRoot, store).catch(() => {})
+  // The service looks again on its next shared-room call, so a later pairing needs no reconnect.
+  const sync = withSync ? () => { try { return syncFor({ stateRoot: store.stateRoot, chatRoot: root }) } catch { return null } } : null
   return { store, service: createService({ store, sync, env, proc, adapters }) }
 }
 export const openDaemonConnection = options => openConnection({ ...options, scopeOf: projectRootAsync, withSync: true })

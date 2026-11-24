@@ -211,3 +211,21 @@ test('red check: without the receiving engine nothing crosses, and a shared room
   // Every file sync writes stays under the device's own state root.
   for (const name of ['mac', 'pc']) assert.ok(fs.existsSync(path.join(w.devices[name].stateRoot, 'sync', 'device.json')))
 })
+
+test('a tab open before its machine was paired picks the pairing up on its next shared-room call', async t => {
+  const w = await world(t, { syncOn: false })
+  const { mac, pc } = w.devices
+  // Stands in for syncFor: nothing before the pairing, the engine after it.
+  let paired = false, engine = null
+  const find = () => paired ? (engine ??= w.own(createSync({ stateRoot: mac.stateRoot, chatRoot: mac.chatRoot, drainWaitS: 1, retryMs: 100 })), engine.start(), engine) : null
+  const service = createService({ store: mac.store, sync: find, adapters: mac.adapters, env: {} })
+  t.after(() => service.close())
+  await assert.rejects(service.call('create_room', { room: 'late', title: 'Late', shared: true }), /need this machine paired/)
+  paired = true
+  assert.deepEqual(await service.call('create_room', { room: 'late', title: 'Late', shared: true }), { room: 'late', title: 'Late', shared: true })
+  await until(() => mac.store.sharedRoom('late'), 'room made locally by the engine')
+  // The other device's engine starts after the room exists and gets it from the hub.
+  const pcEngine = w.own(createSync({ stateRoot: pc.stateRoot, chatRoot: pc.chatRoot, drainWaitS: 1, retryMs: 100 }))
+  pcEngine.start(); await pcEngine.addProject(pc.store.projectRoot, pc.store)
+  await until(() => pc.store.sharedRoom('late'), 'room reached the pc')
+})
