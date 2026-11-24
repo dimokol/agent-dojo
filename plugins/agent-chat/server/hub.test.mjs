@@ -34,8 +34,18 @@ async function startHub(dir, port = 0) {
 async function world(t, { syncOn = true } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-hub-')))
   const hubDir = path.join(base, 'hub')
-  let hub = await startHub(hubDir)
-  const devices = {}
+  // Cleanup is registered before anything starts, so a setup that throws part way leaves no hub or
+  // engine running. Engines a test starts later stop here too, before the folder goes: Windows can't
+  // remove files a running engine holds open, and an engine left running keeps the process alive.
+  let hub = null
+  const devices = {}, engines = []
+  t.after(async () => {
+    for (const engine of engines) await engine.stop()
+    for (const d of Object.values(devices)) d.service.close()
+    await hub?.running.close()
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 })
+  })
+  hub = await startHub(hubDir)
   const origins = { mac: 'git@github.com:Dimokol/agent-dojo.git', pc: 'https://github.com/dimokol/agent-dojo' }
   for (const name of ['mac', 'pc']) {
     const dir = path.join(base, name)
@@ -48,21 +58,13 @@ async function world(t, { syncOn = true } = {}) {
     await pair(stateRoot, createInvite(hubDir, { address: `127.0.0.1:${hub.port}` }), { name })
     const store = createStore({ root: chatRoot, projectRoot, stateRoot })
     const sync = syncOn ? createSync({ stateRoot, chatRoot, drainWaitS: 1, retryMs: 100 }) : null
+    if (sync) engines.push(sync)
     if (sync) { sync.start(); await sync.addProject(store.projectRoot, store) }
     const transport = []
     const adapters = { async deliver(input) { transport.push({ agent: input.agent, ids: input.messages.map(m => m.id), texts: input.messages.map(m => m.message) }); return { status: 'accepted', attempted: true, detail: 'scripted' } } }
     const service = createService({ store, sync, adapters, env: {} })
     devices[name] = { dir, projectRoot, stateRoot, chatRoot, store, sync, service, transport, adapters }
   }
-  // Engines a test starts later stop here too, before the folder goes: Windows can't remove files
-  // a running engine holds open, and an engine left running keeps the test process alive.
-  const engines = []
-  t.after(async () => {
-    for (const engine of engines) await engine.stop()
-    for (const d of Object.values(devices)) { d.service.close(); await d.sync?.stop() }
-    await hub.running.close()
-    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 })
-  })
   return { base, hubDir, devices, own: engine => (engines.push(engine), engine), get hub() { return hub }, async restartHub() { hub = await startHub(hubDir, hub.port); return hub }, async stopHub() { await hub.running.close() } }
 }
 const join = (d, agent, room = 'bridge') => d.service.call('join_room', { room, agent, session: { id: `${agent}-session`, runtime: 'manual' } })
