@@ -64,7 +64,8 @@ function stateOf(row, message, fixed) {
 export function recipientStates(state, rs, message, senderId) {
   const label = (id, row) => row?.agent ?? state.participants?.[id]?.name ?? message.to
   // Dismissed open mail reads as handled; the log and any receipt stay as they were.
-  const read = (id, row, fixed) => isDismissed(rs, message, id) ? 'handled' : stateOf(row, message, fixed)
+  // Mail to a session on another device: that device keeps its read state, the hub its delivery.
+  const read = (id, row, fixed) => String(id).startsWith('remote:') ? 'remote' : isDismissed(rs, message, id) ? 'handled' : stateOf(row, message, fixed)
   const fixed = fixedRecipients(rs, message)
   if (fixed) return fixed.map(id => {
     const row = rows(rs).find(member => member.participant_id === id)

@@ -15,6 +15,7 @@ import { postPolicy, isBroadcast, wakes, readState } from './message-policy.mjs'
 import { migrateReadIndex, compactReadIndex, recipientStates, directTarget } from './read-index.mjs'
 import { isDismissed, dismissMail } from './dismissals.mjs'
 import { hasModeBits } from './platform.mjs'
+import { cleanRemoteText } from './hub-protocol.mjs'
 
 // A doorbell nobody answered (a lost frame, a tab that closed mid-turn) must
 // not silence later mail for good. After this long it stops gating, and the
@@ -80,11 +81,27 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
   const { records, indexed } = createLogReader(room => paths(room).log)
   // A folder this project hasn't claimed may be another project's of the same name: nothing in it counts.
   const roomExists = (room) => present() && Boolean(readJson(paths(room).meta, null))
-  const makeRoom = (room, title) => {
+  // A shared room's room.json names its hub project; every other room stays on this machine.
+  const sharedOf = room => { try { return present() ? readJson(paths(room).meta, null)?.shared ?? null : null } catch { return null } }
+  const outboxDir = path.join(stateRoot, 'sync', 'outbox')
+  // A post to a shared room waits here until the hub stores it, written under the room lock right
+  // after the log line. If that write fails, the post reports the error and a retry with the same
+  // idempotency_key writes it again (the hub drops a message ID it already has).
+  const toOutbox = (shared, record) => {
+    ensureDirectory(outboxDir)
+    atomicJson(path.join(outboxDir, `${record.id}.json`), { project: shared.project, room: shared.room, id: record.id, from: record.from, to: record.to,
+      channel: record.channel, reply_to: record.reply_to, ts: record.ts, participant: record.from_id ?? undefined,
+      ...(record.fyi ? { fyi: true } : {}), ...(record.urgent ? { urgent: true } : {}), body: { plain: record.message } })
+  }
+  const remoteHolder = (rs, name) => {
+    const held = rs?.remote_members?.[String(name).toLowerCase()]
+    return held ? `remote:${held.device}:${held.participant}` : null
+  }
+  const makeRoom = (room, title, shared) => {
     const p = paths(room)
     ensureDirectory(p.dir)
     const created = new Date().toISOString()
-    atomicJson(p.meta, { id: room, title, created })
+    atomicJson(p.meta, { id: room, title, created, ...(shared ? { shared } : {}) })
     append(p.md, `# ${title}\n\n_room \`${room}\` · created ${created}_\n`)
     return { room, title, created }
   }
@@ -221,6 +238,8 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
       // The wake policy is part of the message; a retry can never change it.
       if (previous.to !== to || previous.channel !== channel || previous.message !== message || (previous.reply_to ?? null) !== (reply_to ?? null) ||
           ['fyi', 'urgent'].some(key => (previous[key] === true) !== (policy[key] === true))) throw new Error('idempotency key reused with different message')
+      const sharedRoom = sharedOf(room)
+      if (sharedRoom && !String(previous.from_id ?? '').startsWith('remote:')) toOutbox(sharedRoom, previous)
       return { room, message_id: previous.id, cursor: previous.cursor, duplicate: true }
     }
     const from_id = state ? owner(state, from)?.id ?? null : undefined
@@ -228,8 +247,10 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     // crash before the metadata write routes it to exactly these members.
     const audience = state && isBroadcast(to) ? Object.values(state.rooms[room]?.members ?? {}).filter(member =>
       member.joined && member.participant_id !== from_id && member.after_cursor <= old.length).map(member => member.participant_id) : undefined
-    const record = { ...(state?{from_id,to_id:isBroadcast(to)?null:owner(state,to)?.id??null}:{}), id: crypto.randomUUID(), ts: new Date().toISOString(), from, to, channel, reply_to: reply_to ?? null, message, ...policy, ...(audience ? { audience } : {}), ...(idempotency_key ? { idempotency_key } : {}) }
+    const shared = sharedOf(room)
+    const record = { ...(state?{from_id,to_id:isBroadcast(to)?null:(shared && remoteHolder(state.rooms[room], to)) || (owner(state,to)?.id??null)}:{}), id: crypto.randomUUID(), ts: new Date().toISOString(), from, to, channel, reply_to: reply_to ?? null, message, ...policy, ...(audience ? { audience } : {}), ...(idempotency_key ? { idempotency_key } : {}) }
     append(paths(room).log, JSON.stringify(record) + '\n')
+    if (shared) toOutbox(shared, record)
     const current = records(room)
     if (state) {
       const rs = state.rooms[room] ||= { routed_cursor: 0, members: {} }
@@ -300,18 +321,74 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
     },
     get project() { return project }, get dir() { return dir }, get roomsDir() { return roomsDir }, get materialized() { return present() }, materialize,
     statePath, root: path.resolve(root), projectRoot: fs.realpathSync(projectRoot), stateRoot,
-    createRoom({ room, title }) {
+    createRoom({ room, title, shared }) {
       if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('title must contain 1 to 200 characters')
       // The name is settled before anything is made, so a refused one leaves no project behind.
       const named = room ? identifier(room, 'room') : roomFromTitle(title)
       materialize()
       return transact(() => {
         let id = named
-        if (room && roomExists(id)) throw new Error('room already exists')
+        if ((room || shared) && roomExists(id)) throw new Error('room already exists')
         const base = id
         for (let n = 2; roomExists(id); n++) id = `${base}-${n}`
-        return makeRoom(id, title.trim())
+        return { ...makeRoom(id, title.trim(), shared ? { project: shared.project, room: id } : undefined), ...(shared ? { shared: true } : {}) }
       })
+    },
+    // The planned id of a new room, so a shared one can be made on the hub first.
+    roomIdFor({ room, title }) { return room ? identifier(room, 'room') : roomFromTitle(String(title ?? '')) },
+    sharedRoom(room) { identifier(room, 'room'); return sharedOf(room) },
+    sharedRooms() { return (present() ? fs.readdirSync(roomsDir) : []).flatMap(name => { const shared = sharedOf(name); return shared ? [{ room: name, ...shared }] : [] }) },
+    // The hub made a shared room this project follows: make the local copy. A local room of the
+    // same name that isn't shared stays as it is, and the answer says so.
+    adoptSharedRoom({ room, title, project }) {
+      identifier(room, 'room')
+      materialize()
+      return transact(() => {
+        if (roomExists(room)) return sharedOf(room)?.project === project ? 'present' : 'conflict'
+        makeRoom(room, String(title).slice(0, 200) || room, { project, room })
+        return 'made'
+      })
+    },
+    // Who holds an alias in a shared room on another device, as the hub last said.
+    setRemoteMember(room, member) {
+      identifier(room, 'room')
+      return transact(state => {
+        const rs = state.rooms[room] ||= { routed_cursor: records(room).length, members: {} }
+        const keyOf = String(member.alias).toLowerCase()
+        rs.remote_members ??= {}
+        if (member.released) delete rs.remote_members[keyOf]
+        else rs.remote_members[keyOf] = { alias: member.alias, device: member.device, device_name: member.device_name ?? member.device, participant: member.participant, joined: member.joined === true, runtime: member.runtime ?? null }
+      })
+    },
+    hasMessage(room, id) { try { return present() && indexed(identifier(room, 'room')).has(id) } catch { return false } },
+    remoteMembers(room) { identifier(room, 'room'); return transact(state => Object.values(structuredClone(state.rooms[room]?.remote_members ?? {}))) },
+    // A message another device posted, as the hub stored it. Same log, same routing as a local
+    // post: the tabs' log watchers ring local recipients. Returns false for an ID already here.
+    importRemote(room, { device, seq, to_device, to_participant, envelope, localDevice }) {
+      identifier(room, 'room')
+      const message = cleanRemoteText(envelope.body?.plain ?? '')
+      let validated
+      try { validated = validatePost({ room, from: envelope.from, to: envelope.to, channel: envelope.channel ?? 'main', message: message.trim() ? message : '(empty message)', reply_to: envelope.reply_to ?? undefined, fyi: envelope.fyi, urgent: envelope.urgent }) }
+      catch (error) { throw Object.assign(new Error(`remote message refused: ${error.message}`), { code: 'CHAT_REMOTE_INVALID' }) }
+      materialize()
+      return transact(state => locked(path.join(privateDir, `room-${room}`), () => {
+        if (!roomExists(room)) throw new Error('room does not exist')
+        if (indexed(room).has(envelope.id)) return false
+        const old = records(room), rs = state.rooms[room] ||= { routed_cursor: old.length, members: {} }
+        const { to, channel, reply_to, policy } = validated, broadcast = isBroadcast(to)
+        const local = Object.values(rs.members).find(member => member.agent.toLowerCase() === to.toLowerCase())
+        const to_id = broadcast ? null : to_device === localDevice ? local?.participant_id ?? owner(state, to)?.id ?? null : to_device ? `remote:${to_device}:${to_participant}` : null
+        const audience = broadcast ? Object.values(rs.members).filter(member => member.joined && member.after_cursor <= old.length).map(member => member.participant_id) : undefined
+        const ts = typeof envelope.ts === 'string' && !Number.isNaN(Date.parse(envelope.ts)) ? envelope.ts : new Date().toISOString()
+        const record = { from_id: `remote:${device}:${String(envelope.participant ?? envelope.from).slice(0, 200)}`, to_id, id: envelope.id, ts, from: validated.from, to, channel, reply_to: reply_to ?? null,
+          message: validated.message, ...policy, ...(audience ? { audience } : {}), remote: { device, seq } }
+        append(paths(room).log, JSON.stringify(record) + '\n')
+        const current = records(room)
+        for (const member of Object.values(rs.members)) enqueue(state, room, member, current.slice(rs.routed_cursor))
+        rs.routed_cursor = current.length
+        try { append(paths(room).md, `\n### ${record.from} → ${to} · ${ts} · id ${record.id} · from another device\n\n${record.message}\n`) } catch {}
+        return true
+      }))
     },
     listRooms() {
       return transact(() => (present() ? fs.readdirSync(roomsDir, { withFileTypes: true }) : []).filter((entry) => entry.isDirectory()).flatMap((entry) => {
@@ -325,7 +402,7 @@ export function createStore({ root: givenRoot, projectRoot, stateRoot = path.joi
         let messages
         try { messages = records(entry.name) }
         catch { return [{ room: meta.id, title: meta.title, created: meta.created, messages: null, last_ts: null, error: 'Canonical log needs recovery' }] }
-        return [{ room: meta.id, title: meta.title, created: meta.created, messages: messages.length, last_ts: messages.at(-1)?.ts || null }]
+        return [{ room: meta.id, title: meta.title, created: meta.created, messages: messages.length, last_ts: messages.at(-1)?.ts || null, ...(meta.shared ? { shared: true } : {}) }]
       }))
     },
     post(args) {
