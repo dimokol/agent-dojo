@@ -54,12 +54,16 @@ async function world(t, { syncOn = true } = {}) {
     const service = createService({ store, sync, adapters, env: {} })
     devices[name] = { dir, projectRoot, stateRoot, chatRoot, store, sync, service, transport, adapters }
   }
+  // Engines a test starts later stop here too, before the folder goes: Windows can't remove files
+  // a running engine holds open, and an engine left running keeps the test process alive.
+  const engines = []
   t.after(async () => {
+    for (const engine of engines) await engine.stop()
     for (const d of Object.values(devices)) { d.service.close(); await d.sync?.stop() }
     await hub.running.close()
-    fs.rmSync(base, { recursive: true, force: true })
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 })
   })
-  return { base, hubDir, devices, get hub() { return hub }, async restartHub() { hub = await startHub(hubDir, hub.port); return hub }, async stopHub() { await hub.running.close() } }
+  return { base, hubDir, devices, own: engine => (engines.push(engine), engine), get hub() { return hub }, async restartHub() { hub = await startHub(hubDir, hub.port); return hub }, async stopHub() { await hub.running.close() } }
 }
 const join = (d, agent, room = 'bridge') => d.service.call('join_room', { room, agent, session: { id: `${agent}-session`, runtime: 'manual' } })
 const outbox = d => { try { return fs.readdirSync(path.join(d.stateRoot, 'sync', 'outbox')).filter(n => n.endsWith('.json')) } catch { return [] } }
@@ -172,16 +176,14 @@ test('posts wait in the outbox while the hub is down and arrive once after it re
   assert.equal(outbox(mac).length, 1)
   // The mac's engine restarts while the hub is away: the outbox is on disk, not in memory.
   await mac.sync.stop()
-  const again = createSync({ stateRoot: mac.stateRoot, chatRoot: mac.chatRoot, drainWaitS: 1, retryMs: 100 })
-  t.after(() => again.stop())
+  const again = w.own(createSync({ stateRoot: mac.stateRoot, chatRoot: mac.chatRoot, drainWaitS: 1, retryMs: 100 }))
   again.start(); await again.addProject(mac.store.projectRoot, mac.store)
   await w.restartHub()
   await until(() => pc.transport.some(frame => frame.texts.includes('while asleep')), 'the queued post on the pc', 20_000)
   await until(() => !outbox(mac).length, 'mac outbox emptied')
   // The pc's engine restarts from its stored cursor and imports nothing twice.
   await pc.sync.stop()
-  const pcAgain = createSync({ stateRoot: pc.stateRoot, chatRoot: pc.chatRoot, drainWaitS: 1, retryMs: 100 })
-  t.after(() => pcAgain.stop())
+  const pcAgain = w.own(createSync({ stateRoot: pc.stateRoot, chatRoot: pc.chatRoot, drainWaitS: 1, retryMs: 100 }))
   pcAgain.start(); await pcAgain.addProject(pc.store.projectRoot, pc.store)
   await until(() => pcAgain.cursor > 0, 'pc engine running')
   await new Promise(resolve => setTimeout(resolve, 1500))
