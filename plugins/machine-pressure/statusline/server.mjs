@@ -292,12 +292,12 @@ const LEVEL_COLOR = { 2: '\x1b[31m', 1: '\x1b[33m', 0: '\x1b[32m', '-1': '\x1b[2
 const seg = (level, text) => process.env.NO_COLOR ? text : `${LEVEL_COLOR[level]}${text}\x1b[0m`
 const lvl = (v, a, r) => v === null ? -1 : v >= r ? 2 : v >= a ? 1 : 0
 const lvlLow = (v, a, r) => v === null ? -1 : v <= r ? 2 : v <= a ? 1 : 0
-function windowsPressure(env = process.env) {
-  const { cpu, ram, disk } = windowsReadings()
+export function windowsPressure(env = process.env, { cpu, ram, disk } = windowsReadings()) {
   const sCpu = lvl(cpu, threshold('CPU_AMBER', 85, env), threshold('CPU_RED', 97, env))
   const sRam = lvl(ram, threshold('RAM_AMBER', 85, env), threshold('RAM_RED', 93, env))
   const sDisk = lvlLow(disk, threshold('DISK_AMBER_GB', 20, env), threshold('DISK_RED_GB', 10, env))
-  const worst = Math.max(sCpu, sRam, sDisk)
+  // RED means memory is short, as on the Mac (and pressure.sh): a CPU spike or low disk stops at AMBER.
+  const worst = Math.max(Math.min(sCpu, 1), sRam, Math.min(sDisk, 1))
   const level = { 2: 'RED', 1: 'AMBER', 0: 'OK', '-1': 'UNKNOWN' }[worst]
   return [
     seg(sCpu, cpu === null ? 'CPU …' : `CPU ${cpu}%`),

@@ -69,8 +69,9 @@ out=$(printf '%s' "$INPUT" | AGENT_CHAT_ROOT=$WORK/acroot CLAUDE_CONFIG_DIR=$WOR
 has "profile a gets its agent-chat copy" "name-a" "$out"
 out=$(printf '%s' "$INPUT" | AGENT_CHAT_ROOT=$WORK/acroot CLAUDE_CONFIG_DIR=$WORK/cfg-b sh "$WORK/bin/client.sh")
 has "profile b gets its own" "name-b" "$out"
-out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_DISK_AMBER_GB=999998 MACHINE_PRESSURE_DISK_RED_GB=999999 sh "$WORK/bin/client.sh")
-i=0; while [ $i -lt 30 ]; do case $out in *"pressure RED"*) break ;; esac; sleep 0.2; out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_DISK_AMBER_GB=999998 MACHINE_PRESSURE_DISK_RED_GB=999999 sh "$WORK/bin/client.sh"); i=$((i+1)); done
+# RAM, not disk: on Windows only memory reaches RED.
+out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 sh "$WORK/bin/client.sh")
+i=0; while [ $i -lt 30 ]; do case $out in *"pressure RED"*) break ;; esac; sleep 0.2; out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 sh "$WORK/bin/client.sh"); i=$((i+1)); done
 has "a tab's own thresholds apply" "pressure RED" "$out"
 rm -f "$WORK/config.json"
 
@@ -122,6 +123,14 @@ has "top names the claude binary" "claude=50%/200M" "$out"
 has "top names the node package" "node:vitest=10%/100M" "$out"
 has "vitest workers summed" "vitest=2/15%/200M" "$out"
 has "an app named by its bundle" "Visual_Studio_Code=1%/10M" "$out"
+
+echo "== Windows pressure level: memory short is RED, a CPU spike or low disk AMBER"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { windowsPressure } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const at = r => windowsPressure({}, r).at(-1)
+  console.log([at({ cpu: 99, ram: 50, disk: 100 }), at({ cpu: 10, ram: 50, disk: 5 }), at({ cpu: 10, ram: 95, disk: 100 })].join(' / '))")
+has "windows levels" "pressure AMBER / pressure AMBER / pressure RED" "$out"
 
 echo "== agent-chat module: Windows installer's release root"
 # The Windows installer keeps releases in %LOCALAPPDATA%\agent-chat\release-root, while
