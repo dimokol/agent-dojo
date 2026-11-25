@@ -233,7 +233,8 @@ async function agentChatName(cfg, input, env) {
 // ---------- machine pressure ----------
 // macOS and Linux: machine-pressure's pressure.sh stays the one source of thresholds; it runs once
 // per 4 s for every tab. Windows: pressure.sh can't read anything there, so the values are taken
-// in-process (no load average on Windows) with the same thresholds and colors.
+// in-process (no load average on Windows; commit charge through powershell every 30 s) with the same
+// thresholds and colors.
 function findPressureScript() {
   const candidates = [process.env.SHARED_STATUSLINE_PRESSURE, path.join(HERE, 'pressure.sh'), path.join(HERE, '..', 'scripts', 'pressure.sh')]
   return candidates.find(f => f && fs.existsSync(f)) || null
@@ -280,28 +281,45 @@ function cpuPercent() {
   if (!prev || now.total <= prev.total) return null
   return Math.max(0, Math.min(100, Math.round((1 - (now.idle - prev.idle) / (now.total - prev.total)) * 100)))
 }
-if (WIN) cpuPercent() // first reading, so the first render already has a delta
+// Commit charge (committed memory against the commit limit), the gate's "commit" signal. Node can't
+// read it, so one powershell call refreshes it in the background at most every 30 s.
+const commitCharge = { pct: null, at: 0, pending: false }
+function refreshCommit() {
+  if (commitCharge.pending || Date.now() - commitCharge.at < 30000) return
+  commitCharge.pending = true
+  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '$o = Get-CimInstance Win32_OperatingSystem; "$($o.TotalVirtualMemorySize) $($o.FreeVirtualMemory)"'],
+  { timeout: 10000, windowsHide: true }, (err, out) => {
+    const [total, free] = String(out || '').trim().split(/\s+/).map(Number)
+    if (!err && total > 0) commitCharge.pct = Math.round((1 - free / total) * 100)
+    Object.assign(commitCharge, { at: Date.now(), pending: false })
+  })
+}
+if (WIN) { cpuPercent(); refreshCommit() } // first readings, so the first render already has them
 export function windowsReadings() {
   const cpu = cpuPercent()
   const ram = Math.round((1 - os.freemem() / os.totalmem()) * 100)
   let disk = null
   try { const s = fs.statfsSync(HOME); disk = (s.bavail * s.bsize) / 2 ** 30 } catch {}
-  return { cpu, ram, disk }
+  refreshCommit()
+  return { cpu, ram, commit: commitCharge.pct, disk }
 }
 const LEVEL_COLOR = { 2: '\x1b[31m', 1: '\x1b[33m', 0: '\x1b[32m', '-1': '\x1b[2m' }
 const seg = (level, text) => process.env.NO_COLOR ? text : `${LEVEL_COLOR[level]}${text}\x1b[0m`
 const lvl = (v, a, r) => v === null ? -1 : v >= r ? 2 : v >= a ? 1 : 0
 const lvlLow = (v, a, r) => v === null ? -1 : v <= r ? 2 : v <= a ? 1 : 0
-export function windowsPressure(env = process.env, { cpu, ram, disk } = windowsReadings()) {
+export function windowsPressure(env = process.env, { cpu, ram, commit = null, disk } = windowsReadings()) {
   const sCpu = lvl(cpu, threshold('CPU_AMBER', 85, env), threshold('CPU_RED', 97, env))
   const sRam = lvl(ram, threshold('RAM_AMBER', 85, env), threshold('RAM_RED', 93, env))
+  const sCommit = lvl(commit, threshold('SWAP_AMBER', 70, env), threshold('SWAP_RED', 90, env))
   const sDisk = lvlLow(disk, threshold('DISK_AMBER_GB', 20, env), threshold('DISK_RED_GB', 10, env))
   // RED means memory is short, as on the Mac (and pressure.sh): a CPU spike or low disk stops at AMBER.
-  const worst = Math.max(Math.min(sCpu, 1), sRam, Math.min(sDisk, 1))
+  const worst = Math.max(Math.min(sCpu, 1), sRam, sCommit, Math.min(sDisk, 1))
   const level = { 2: 'RED', 1: 'AMBER', 0: 'OK', '-1': 'UNKNOWN' }[worst]
   return [
     seg(sCpu, cpu === null ? 'CPU …' : `CPU ${cpu}%`),
     seg(sRam, `RAM ${ram}%`),
+    seg(sCommit, commit === null ? 'commit …' : `commit ${commit}%`),
     seg(sDisk, disk === null ? 'disk n/a' : `disk ${disk < 10 ? disk.toFixed(1) : Math.round(disk)}G`),
     seg(worst, `pressure ${level}`),
   ]
@@ -441,7 +459,12 @@ export async function render(input, configDir = '', env = requestEnv('', configD
     const parts = []
     for (const item of line) {
       const spec = typeof item === 'string' ? { type: item } : item || {}
-      if (spec.type === 'pressure') { parts.push(...await pressureParts(env)); continue }
+      if (spec.type === 'pressure') {
+        const pp = await pressureParts(env)
+        // "icon": the level as one symbol in the level's color, in place of "pressure RED" (kept under NO_COLOR).
+        parts.push(...(spec.icon && !process.env.NO_COLOR ? pp.map(s => s.replace(/pressure (RED|AMBER|OK|UNKNOWN)/, spec.icon)) : pp))
+        continue
+      }
       if (spec.type === 'text') { if (spec.text) parts.push(paint(spec.color ?? null, spec.text)); continue }
       const text = (await segment(spec.type, input, ctx)) || spec.fallback
       if (text) parts.push(paint(spec.color ?? cfg.colors?.[spec.type] ?? DEFAULT_COLORS[spec.type] ?? null, text))
