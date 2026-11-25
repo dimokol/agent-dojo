@@ -132,5 +132,20 @@ out=$(node --input-type=module -e "
   console.log([at({ cpu: 99, ram: 50, disk: 100 }), at({ cpu: 10, ram: 50, disk: 5 }), at({ cpu: 10, ram: 95, disk: 100 })].join(' / '))")
 has "windows levels" "pressure AMBER / pressure AMBER / pressure RED" "$out"
 
+echo "== agent-chat module: Windows installer's release root"
+# The Windows installer keeps releases in %LOCALAPPDATA%\agent-chat\release-root, while
+# AGENT_CHAT_ROOT points at the chats folder on another drive.
+REL=$WORK/lad/agent-chat/release-root
+mkdir -p "$REL/releases/r1" "$WORK/chats"
+printf '{"current":{"id":"r1"}}' > "$REL/current.json"
+: > "$REL/releases/r1/statusline-name.mjs"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { findAgentChatModule } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const env = { AGENT_CHAT_ROOT: '$WORK/chats', LOCALAPPDATA: '$WORK/lad', CLAUDE_CONFIG_DIR: '$WORK/nocfg' }
+  console.log('win=' + findAgentChatModule({}, env, { windows: true }) + ' mac=' + (String(findAgentChatModule({}, env, { windows: false })).includes('/lad/') ? 'lad' : 'not-lad'))")
+has "found under LOCALAPPDATA on Windows" "win=$REL/releases/r1/statusline-name.mjs" "$out"
+has "not looked up there elsewhere" "mac=not-lad" "$out"
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
