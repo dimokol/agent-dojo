@@ -69,8 +69,9 @@ out=$(printf '%s' "$INPUT" | AGENT_CHAT_ROOT=$WORK/acroot CLAUDE_CONFIG_DIR=$WOR
 has "profile a gets its agent-chat copy" "name-a" "$out"
 out=$(printf '%s' "$INPUT" | AGENT_CHAT_ROOT=$WORK/acroot CLAUDE_CONFIG_DIR=$WORK/cfg-b sh "$WORK/bin/client.sh")
 has "profile b gets its own" "name-b" "$out"
-out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_DISK_AMBER_GB=999998 MACHINE_PRESSURE_DISK_RED_GB=999999 sh "$WORK/bin/client.sh")
-i=0; while [ $i -lt 30 ]; do case $out in *"pressure RED"*) break ;; esac; sleep 0.2; out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_DISK_AMBER_GB=999998 MACHINE_PRESSURE_DISK_RED_GB=999999 sh "$WORK/bin/client.sh"); i=$((i+1)); done
+# RAM, not disk: on Windows only memory reaches RED.
+out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 sh "$WORK/bin/client.sh")
+i=0; while [ $i -lt 30 ]; do case $out in *"pressure RED"*) break ;; esac; sleep 0.2; out=$(printf '%s' "$INPUT" | MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 sh "$WORK/bin/client.sh"); i=$((i+1)); done
 has "a tab's own thresholds apply" "pressure RED" "$out"
 rm -f "$WORK/config.json"
 
