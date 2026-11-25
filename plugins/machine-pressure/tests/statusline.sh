@@ -123,5 +123,13 @@ has "top names the node package" "node:vitest=10%/100M" "$out"
 has "vitest workers summed" "vitest=2/15%/200M" "$out"
 has "an app named by its bundle" "Visual_Studio_Code=1%/10M" "$out"
 
+echo "== Windows pressure level: memory short is RED, a CPU spike or low disk AMBER"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { windowsPressure } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const at = r => windowsPressure({}, r).at(-1)
+  console.log([at({ cpu: 99, ram: 50, disk: 100 }), at({ cpu: 10, ram: 50, disk: 5 }), at({ cpu: 10, ram: 95, disk: 100 })].join(' / '))")
+has "windows levels" "pressure AMBER / pressure AMBER / pressure RED" "$out"
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

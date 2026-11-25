@@ -16,7 +16,8 @@
 # Platforms: macOS (sysctl, vm_stat, ps, df), Linux (/proc, df) and Windows under
 # Git Bash, MSYS or Cygwin (one powershell.exe call per sample, df). Windows has no
 # load average; its swap segment is the commit charge (committed memory against
-# the commit limit), named "commit", with the swap thresholds. Anything else
+# the commit limit), named "commit", with the swap thresholds. There, as on macOS,
+# RED means memory is short: CPU and disk reach AMBER at most. Anything else
 # reports UNKNOWN. On macOS the kernel's memory pressure level
 # (kern.memorystatus_vm_pressure_level: warn is AMBER, critical is RED) counts
 # with RAM, and swap is shown without setting the level: macOS grows swap on
@@ -230,6 +231,12 @@ s_swap=$(lvl "$swap" "$SWAP_AMBER" "$SWAP_RED")
 # macOS: swap is shown only (-2: no color, no level).
 [ "$OS" = Darwin ] && [ -n "$swap" ] && s_swap=-2
 s_disk=$(lvl_low "$disk" "$DISK_AMBER" "$DISK_RED")
+# Windows: RED means memory is short (RAM or commit charge), as on the Mac. A CPU spike or low disk
+# stops at AMBER, so a busy moment doesn't block every heavy command.
+case $OS in MINGW*|MSYS*|CYGWIN*)
+  [ "$s_cpu" -gt 1 ] && s_cpu=1
+  [ "$s_disk" -gt 1 ] && s_disk=1 ;;
+esac
 if [ -n "$load1" ] && [ -n "$cores" ]; then
   la=$(awk -v f="$LOAD_AMBER_X" -v c="$cores" 'BEGIN{printf "%.2f", f*c}')
   lr=$(awk -v f="$LOAD_RED_X" -v c="$cores" 'BEGIN{printf "%.2f", f*c}')

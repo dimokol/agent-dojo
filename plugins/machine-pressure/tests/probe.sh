@@ -167,6 +167,16 @@ eq "windows ram" 75 "$(jf "$out" .ram_pct)"
 eq "windows commit charge in the swap slot" 87 "$(jf "$out" .swap_pct)"
 eq "windows level from commit charge" AMBER "$(jf "$out" .level)"
 eq "windows statusline names commit" "CPU 30% | RAM 75% | commit 87% | load n/a | disk 100G | pressure AMBER" "$(rm -f "$WORK"/env/tmp/*.cache; NUMBER_OF_PROCESSORS=8 probe --statusline)"
+# As on the Mac, RED means memory is short. A CPU spike alone stops at AMBER (the PC refused
+# spawns at RAM 49%, commit 69%).
+mkenv; OSNAME=MINGW64_NT-10.0-19045; write_stubs
+# cpu 99%, RAM 50% used, commit 60% used
+printf '#!/bin/sh\nprintf "99 16777216 8388608 33554432 13421773\\r\\n"\n' > "$BIN/powershell.exe"; chmod +x "$BIN/powershell.exe"
+eq "windows cpu spike alone is AMBER, not RED" AMBER "$(jf "$(NUMBER_OF_PROCESSORS=8 probe --json)" .level)"
+mkenv; OSNAME=MINGW64_NT-10.0-19045; write_stubs
+# cpu 10%, RAM 95% used
+printf '#!/bin/sh\nprintf "10 16777216 838861 33554432 13421773\\r\\n"\n' > "$BIN/powershell.exe"; chmod +x "$BIN/powershell.exe"
+eq "windows RAM short is still RED" RED "$(jf "$(NUMBER_OF_PROCESSORS=8 probe --json)" .level)"
 mkenv; OSNAME=MSYS_NT-10.0; write_stubs
 printf '#!/bin/sh\nexit 1\n' > "$BIN/powershell.exe"; printf '#!/bin/sh\nexit 1\n' > "$BIN/df"; chmod +x "$BIN/powershell.exe"
 eq "windows without powershell: UNKNOWN" UNKNOWN "$(jf "$(probe --json)" .level)"
