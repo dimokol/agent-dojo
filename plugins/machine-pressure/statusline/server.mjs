@@ -180,17 +180,21 @@ function gitBranch(cwd) {
 
 // ---------- agent-chat name, through agent-chat's own statuslineName ----------
 // Found once a minute: "agentChatModule" in the config, else the release agent-chat's installer
-// made under $AGENT_CHAT_ROOT, else the newest copy in the Claude plugin cache.
+// made under $AGENT_CHAT_ROOT (on Windows also under %LOCALAPPDATA%), else the newest copy in the Claude plugin cache.
 // Looked up per tab (its config dir and AGENT_CHAT_ROOT), so two profiles can use different copies.
 const agentChats = new Map() // "<configDir>\0<AGENT_CHAT_ROOT>" -> { file, fn, defaultStateRoot, checked }
-export function findAgentChatModule(cfg, env = process.env) {
+export function findAgentChatModule(cfg, env = process.env, { windows = WIN } = {}) {
   if (cfg.agentChatModule) return cfg.agentChatModule.replace(/^~(?=$|[\\/])/, HOME)
-  const root = env.AGENT_CHAT_ROOT || path.join(HOME, '.local', 'state', 'agent-chat')
-  try {
-    const cur = JSON.parse(fs.readFileSync(path.join(root, 'release-root', 'current.json'), 'utf8')).current.id
-    const f = path.join(root, 'release-root', 'releases', cur, 'statusline-name.mjs')
-    if (fs.existsSync(f)) return f
-  } catch {}
+  const roots = [env.AGENT_CHAT_ROOT || path.join(HOME, '.local', 'state', 'agent-chat')]
+  // The Windows installer keeps releases on the system drive, apart from the chats (its installPaths).
+  if (windows) roots.push(path.join(env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'agent-chat'))
+  for (const root of roots) {
+    try {
+      const cur = JSON.parse(fs.readFileSync(path.join(root, 'release-root', 'current.json'), 'utf8')).current.id
+      const f = path.join(root, 'release-root', 'releases', cur, 'statusline-name.mjs')
+      if (fs.existsSync(f)) return f
+    } catch {}
+  }
   for (const base of [env.CLAUDE_CONFIG_DIR, path.join(HOME, '.claude')].filter(Boolean)) {
     const cache = path.join(base, 'plugins', 'cache', 'dimokol', 'agent-chat')
     try {

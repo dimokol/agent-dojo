@@ -123,5 +123,20 @@ has "top names the node package" "node:vitest=10%/100M" "$out"
 has "vitest workers summed" "vitest=2/15%/200M" "$out"
 has "an app named by its bundle" "Visual_Studio_Code=1%/10M" "$out"
 
+echo "== agent-chat module: Windows installer's release root"
+# The Windows installer keeps releases in %LOCALAPPDATA%\agent-chat\release-root, while
+# AGENT_CHAT_ROOT points at the chats folder on another drive.
+REL=$WORK/lad/agent-chat/release-root
+mkdir -p "$REL/releases/r1" "$WORK/chats"
+printf '{"current":{"id":"r1"}}' > "$REL/current.json"
+: > "$REL/releases/r1/statusline-name.mjs"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { findAgentChatModule } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const env = { AGENT_CHAT_ROOT: '$WORK/chats', LOCALAPPDATA: '$WORK/lad', CLAUDE_CONFIG_DIR: '$WORK/nocfg' }
+  console.log('win=' + findAgentChatModule({}, env, { windows: true }) + ' mac=' + (String(findAgentChatModule({}, env, { windows: false })).includes('/lad/') ? 'lad' : 'not-lad'))")
+has "found under LOCALAPPDATA on Windows" "win=$REL/releases/r1/statusline-name.mjs" "$out"
+has "not looked up there elsewhere" "mac=not-lad" "$out"
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
