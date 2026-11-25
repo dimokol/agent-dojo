@@ -437,7 +437,12 @@ export async function render(input, configDir = '', env = requestEnv('', configD
     const parts = []
     for (const item of line) {
       const spec = typeof item === 'string' ? { type: item } : item || {}
-      if (spec.type === 'pressure') { parts.push(...await pressureParts(env)); continue }
+      if (spec.type === 'pressure') {
+        const pp = await pressureParts(env)
+        // "icon": the level as one symbol in the level's color, in place of "pressure RED" (kept under NO_COLOR).
+        parts.push(...(spec.icon && !process.env.NO_COLOR ? pp.map(s => s.replace(/pressure (RED|AMBER|OK|UNKNOWN)/, spec.icon)) : pp))
+        continue
+      }
       if (spec.type === 'text') { if (spec.text) parts.push(paint(spec.color ?? null, spec.text)); continue }
       const text = (await segment(spec.type, input, ctx)) || spec.fallback
       if (text) parts.push(paint(spec.color ?? cfg.colors?.[spec.type] ?? DEFAULT_COLORS[spec.type] ?? null, text))

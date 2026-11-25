@@ -132,5 +132,15 @@ out=$(node --input-type=module -e "
   console.log([at({ cpu: 99, ram: 50, disk: 100 }), at({ cpu: 10, ram: 50, disk: 5 }), at({ cpu: 10, ram: 95, disk: 100 })].join(' / '))")
 has "windows levels" "pressure AMBER / pressure AMBER / pressure RED" "$out"
 
+echo "== pressure icon: the level as one colored symbol"
+printf '{"lines":[[{"type":"pressure","icon":"◆"}]]}' > "$WORK/icon.json"
+out=$(env -u NO_COLOR SHARED_STATUSLINE_CONFIG="$WORK/icon.json" MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { render, requestEnv } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  console.log(JSON.stringify(await render({}, '', requestEnv('MACHINE_PRESSURE_RAM_AMBER=0&MACHINE_PRESSURE_RAM_RED=1'))))
+  process.exit(0)")
+has "icon in the RED color" '\u001b[31m◆\u001b[0m' "$out"
+case $out in *"pressure RED"*) bad "the word is gone" "$out" ;; *) ok "the word is gone" ;; esac
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
