@@ -154,6 +154,55 @@ out=$(node --input-type=module -e "
   process.exit(0)")
 has "windows readings refresh" "CPU 30% | RAM 40% | commit … / CPU 12% | RAM 41% | commit 43% / CPU 50% | RAM 42% | commit 44%" "$out"
 
+echo "== drive label: the disk segment names its drive when there are 2+ local drives"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const m = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const w = m.parseWindowsDrives('C:\r\nd:\r\n\r\nE:\r\n')
+  const one = d => d ? d.label + '@' + d.mount : 'none'
+  console.log('win=' + w.join(','))
+  console.log('wpick=' + one(m.pickDrive('D:\\\\work\\\\x', w, true)) + ' unc=' + one(m.pickDrive('\\\\\\\\srv\\\\share\\\\x', w, true)))
+  const mounts = [
+    '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
+    '/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse, protect, root data)',
+    '/dev/disk5s1 on /Volumes/T7 Shield (apfs, local, nodev, nosuid, journaled, noowners)',
+    '//me@nas/share on /Volumes/share (smbfs, nodev, nosuid, mounted by me)',
+    '/dev/disk6 on /Volumes/AUDIO_CD (cd9660, local, nodev, nosuid, read-only)',
+    '/dev/disk7s1 on /Volumes/A Very Long Volume Name (exfat, local, nodev, nosuid)',
+  ].join('\n')
+  const vols = m.parseMacMounts(mounts)
+  console.log('mac=' + vols.map(v => v.mount).join(','))
+  const drives = [{ mount: '/', name: 'Macintosh HD' }, ...vols]
+  console.log('mpick=' + [m.pickDrive('/Volumes/T7 Shield/proj', drives, false), m.pickDrive('/Users/me/x', drives, false), m.pickDrive('/Volumes/A Very Long Volume Name', drives, false)].map(one).join(' / '))
+  let calls = 0
+  const list = n => async () => { calls++; return n === 1 ? ['C:'] : ['C:', 'D:'] }
+  const a = m.sessionDrive({ session_id: 's1', cwd: 'D:\\\\x' }, { list: list(2), windows: true }); await a.ready
+  m.sessionDrive({ session_id: 's1', cwd: 'D:\\\\x' }, { list: list(2), windows: true })
+  const b = m.sessionDrive({ session_id: 's2', cwd: 'C:\\\\x' }, { list: list(1), windows: true }); await b.ready
+  console.log('session=' + one(a.drive) + ' single=' + one(b.drive) + ' lists=' + calls)
+  const r = () => ({ cpu: 10, ram: 50, commit: 40, disk: 100 })
+  const lab = await m.pressureParts({ MACHINE_PRESSURE_T: 'a' }, { windows: true, readings: r, drive: { mount: 'D:\\\\', label: 'D:' } })
+  const plain = await m.pressureParts({ MACHINE_PRESSURE_T: 'b' }, { windows: true, readings: r })
+  console.log('seg=' + lab[3] + ' / ' + plain[3])
+  process.exit(0)")
+has "windows drives parsed" "win=C:,D:,E:" "$out"
+has "windows folder drive, UNC unlabeled" "wpick=D:@D:\\ unc=none" "$out"
+has "mac local volumes only" "mac=/Volumes/T7 Shield,/Volumes/A Very Long Volume Name" "$out"
+has "mac folder volume, boot, 12 chars" "mpick=T7 Shield@/Volumes/T7 Shield / Macintosh HD@/ / A Very Long@/Volumes/A Very Long Volume Name" "$out"
+has "read once per session, none for one drive" "session=D:@D:\\ single=none lists=2" "$out"
+has "label in the disk segment" "seg=disk D: 100G / disk 100G" "$out"
+
+echo "== Windows CPU: one sample shared by readings taken close together (one per drive)"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { windowsReadings } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  windowsReadings()
+  await new Promise(r => setTimeout(r, 1200))
+  const a = windowsReadings().cpu, b = windowsReadings('/').cpu
+  console.log(a !== null && a === b ? 'shared' : 'apart ' + a + ' ' + b)
+  process.exit(0)")
+has "second drive gets the same CPU" "shared" "$out"
+
 echo "== pressure icon: the level as one colored symbol"
 printf '{"lines":[[{"type":"pressure","icon":"◆"}]]}' > "$WORK/icon.json"
 out=$(env -u NO_COLOR SHARED_STATUSLINE_CONFIG="$WORK/icon.json" MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 node --input-type=module -e "

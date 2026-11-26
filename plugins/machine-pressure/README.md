@@ -63,7 +63,7 @@ Each line is a list of segments: a name, or `{ "type", "color", "fallback" }`. C
 | `branch` | Git branch, read from `.git/HEAD` (no git process) |
 | `dir` | Folder name |
 | `cost` | Session cost in USD |
-| `pressure` | CPU, RAM, swap, load, free disk and the pressure level, colored like the gate sees them. `"icon": "◆"` shows the level as that symbol in its color instead of `pressure RED` (the word stays under `NO_COLOR`) |
+| `pressure` | CPU, RAM, swap, load, free disk and the pressure level, colored like the gate sees them. `"icon": "◆"` shows the level as that symbol in its color instead of `pressure RED` (the word stays under `NO_COLOR`). With 2+ local drives, free disk is the drive of the session's folder, named: `disk D: 167G` on Windows, `disk T7 400G` on macOS (volume name, 12 characters at most). Internal and external drives count, network shares, disk images, CDs and DVDs don't. The drive list is read once per session, so a session opened on a USB drive picks it up |
 | `text` | `{ "type": "text", "text": "..." }` |
 
 `"loadLog": true` (or `SHARED_STATUSLINE_LOAD_LOG=1`) appends one machine sample per 10 s, load, swap, free memory, the top 5 processes and `groups=` (count, CPU and memory summed per kind: claude, codex, vitest, tsc, next, browsers, ...), to `~/Library/Logs/machine-load.log` (macOS), `$XDG_STATE_HOME/shared-statusline/` (Linux) or `%LOCALAPPDATA%\shared-statusline\` (Windows). It's capped at 5 MB plus one older file. Off by default.
