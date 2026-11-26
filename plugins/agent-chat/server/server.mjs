@@ -131,7 +131,9 @@ export function createService({ store, sync = null, proc = ownProcess(), adapter
     const remote = store.remoteMembers(room)
     const targets = isBroadcast(to) ? remote.filter(row => row.joined) : remote.filter(row => row.alias.toLowerCase() === String(to).toLowerCase())
     const sync = currentSync()
-    return targets.map(row => ({ agent: row.alias, device: row.device_name, ...(sync ? sync.outlook(row.device) : { state: 'queued', detail: 'in the outbox; this machine syncs only while the agent-chat daemon runs' }) }))
+    // That device says the name isn't joined here, so no tab there wakes for it, online or not.
+    const closed = row => ({ state: 'held', reason: 'closed', detail: `Not joined in this room on ${row.device_name} (its tab closed, or it now runs in another project); the mail waits until that name is back in this room.` })
+    return targets.map(row => ({ agent: row.alias, device: row.device_name, ...(!row.joined ? closed(row) : sync ? sync.outlook(row.device) : { state: 'queued', detail: 'in the outbox; this machine syncs only while the agent-chat daemon runs' }) }))
   }
   // A ps of every member on every call was the costliest part of a call, so a pass runs at most
   // once per reconcileEveryMs. A Claude member restored at tab start or joined by its first post
