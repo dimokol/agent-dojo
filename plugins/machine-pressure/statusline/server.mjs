@@ -281,8 +281,11 @@ function threshold(key, dflt, env = process.env) {
   const v = env[`CLAUDE_PLUGIN_OPTION_${key}`] || env[`MACHINE_PRESSURE_${key}`]
   return v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : dflt
 }
-let cpuPrev = null
+// CPU use since the previous sample. A sample under a second old is reused: readings for several
+// drives refresh in the same tick, and a fresh delta there is empty (null) or a few ms of noise.
+let cpuPrev = null, cpuLast = { at: 0, pct: null }
 function cpuPercent() {
+  if (cpuLast.pct !== null && Date.now() - cpuLast.at < 1000) return cpuLast.pct
   const now = os.cpus().reduce((a, c) => {
     const t = c.times
     a.idle += t.idle; a.total += t.user + t.nice + t.sys + t.idle + t.irq
@@ -291,7 +294,8 @@ function cpuPercent() {
   const prev = cpuPrev
   cpuPrev = now
   if (!prev || now.total <= prev.total) return null
-  return Math.max(0, Math.min(100, Math.round((1 - (now.idle - prev.idle) / (now.total - prev.total)) * 100)))
+  cpuLast = { at: Date.now(), pct: Math.max(0, Math.min(100, Math.round((1 - (now.idle - prev.idle) / (now.total - prev.total)) * 100))) }
+  return cpuLast.pct
 }
 // Commit charge (committed memory against the commit limit), the gate's "commit" signal. Node can't
 // read it, so one powershell call refreshes it in the background at most every 30 s.

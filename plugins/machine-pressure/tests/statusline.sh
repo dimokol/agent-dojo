@@ -191,6 +191,17 @@ has "mac folder volume, boot, 12 chars" "mpick=T7 Shield@/Volumes/T7 Shield / Ma
 has "read once per session, none for one drive" "session=D:@D:\\ single=none lists=2" "$out"
 has "label in the disk segment" "seg=disk D: 100G / disk 100G" "$out"
 
+echo "== Windows CPU: one sample shared by readings taken close together (one per drive)"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { windowsReadings } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  windowsReadings()
+  await new Promise(r => setTimeout(r, 1200))
+  const a = windowsReadings().cpu, b = windowsReadings('/').cpu
+  console.log(a !== null && a === b ? 'shared' : 'apart ' + a + ' ' + b)
+  process.exit(0)")
+has "second drive gets the same CPU" "shared" "$out"
+
 echo "== pressure icon: the level as one colored symbol"
 printf '{"lines":[[{"type":"pressure","icon":"◆"}]]}' > "$WORK/icon.json"
 out=$(env -u NO_COLOR SHARED_STATUSLINE_CONFIG="$WORK/icon.json" MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 node --input-type=module -e "
