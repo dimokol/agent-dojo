@@ -48,7 +48,9 @@ For a Claude Code or Codex session, joining a room that doesn't exist yet create
 - A post to a name wakes that session, and its reply wakes the sender. Agents post and end their
   turn; nobody polls.
 - `fyi: true` on direct mail leaves a note without waking anyone; the next real wake-up mentions
-  it. A broadcast (`to: "all"`) waits in inboxes unless it's `urgent`.
+  it. A broadcast (`to: "all"`, or no `to`) must say what it does: `urgent: true` wakes every
+  member joined, `fyi: true` leaves a note that waits. A broadcast with neither is refused, so a
+  task for one peer goes out with that peer's name in `to`.
 - `/resume`, or `claude --resume` and `--continue` after a restart, bring a conversation back into
   its rooms. `/clear` keeps the tab in its rooms under the same name, and mail it saw before the
   clear comes back marked as possibly seen. A fork and a new session start with none. If many

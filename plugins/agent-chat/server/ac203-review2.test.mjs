@@ -95,7 +95,7 @@ test('review2 2: /resume back after the cleared conversation took the name: room
   await read(tab, 'r', 'Reader')
   await peer.call('post', { room: 'r', from: 'Peer', to: 'Reader', message: 'unread-before' })
   conversation = CONV2
-  await tab.call('post', { room: 'r', from: 'Reader', message: 'hi after clear' })
+  await tab.call('post', { room: 'r', from: 'Reader', fyi: true, message: 'hi after clear' })
   conversation = CONV
   await tab.call('list_rooms', {})
   assert.deepEqual(rowsOf(f).filter(row => row.agent === 'Reader'), [{ agent: 'Reader', joined: true, left: null, conversation: CONV }])
@@ -225,15 +225,15 @@ test('review2 6: a bound old name another session took no longer posts as this t
   const s = f.native(f.claude(L1, f.profile(1)), CONV)
   await s.call('join_room', { room: 'r', agent: 'Alpha' })
   await s.call('join_room', { room: 'r', agent: 'Beta' })
-  const own = await s.call('post', { room: 'r', from: 'Alpha', message: 'own earlier name' })
+  const own = await s.call('post', { room: 'r', from: 'Alpha', fyi: true, message: 'own earlier name' })
   assert.equal(f.store.history({ room: 'r' }).find(m => m.id === own.message_id).from, 'Beta')
   assert.match(own.name_note ?? '', /Beta/)
   const other = f.native(f.claude(L2, f.profile(2)), CONV2)
   shift = 8 * 86400000
   assert.equal((await other.call('join_room', { room: 'r', agent: 'Alpha' })).agent, 'Alpha')
-  await assert.rejects(s.call('post', { room: 'r', from: 'Alpha', message: 'x' }), { message: 'you post as Beta here; use from: Beta (or join_room with a new name to rename)' })
+  await assert.rejects(s.call('post', { room: 'r', from: 'Alpha', fyi: true, message: 'x' }), { message: 'you post as Beta here; use from: Beta (or join_room with a new name to rename)' })
   assert.ok(!f.store.history({ room: 'r' }).some(m => m.message === 'x'))
-  const ok = await s.call('post', { room: 'r', from: 'Beta', message: 'y' })
+  const ok = await s.call('post', { room: 'r', from: 'Beta', fyi: true, message: 'y' })
   assert.equal(f.store.history({ room: 'r' }).find(m => m.id === ok.message_id).from, 'Beta')
   const toAlpha = await peer.call('post', { room: 'r', from: 'Peer', to: 'Alpha', message: 'for new alpha' })
   assert.deepEqual(toAlpha.delivery, [{ agent: 'Alpha', state: 'queued' }])

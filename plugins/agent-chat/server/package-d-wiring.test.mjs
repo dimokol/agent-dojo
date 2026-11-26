@@ -152,7 +152,7 @@ test('a Claude session takes its join name over the cached native label; an expl
   assert.deepEqual([kept.agent, kept.requested], ['Chosen', 'Helper'])
   assert.deepEqual(await service.call('inbox', { room: 'other', agent: 'Helper' }), [], 'the asked alias still names this session on its connection')
   // Helper is this session's own earlier name, so the auto-joining post goes out as Chosen.
-  const posted = await service.call('post', { room: 'fresh', from: 'Helper', message: 'auto join' })
+  const posted = await service.call('post', { room: 'fresh', from: 'Helper', fyi: true, message: 'auto join' })
   assert.equal(f.store.history({ room: 'fresh' })[0].from, 'Chosen')
   assert.ok(posted.message_id)
 })

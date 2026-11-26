@@ -38,7 +38,7 @@ test('history defaults to the last 20 messages, each with its cursor', async t =
   const s = setup(t)
   await s.sender.call('create_room', { room: 'room', title: 'Room' })
   await s.join(s.sender, 'Sender')
-  for (let index = 0; index < 25; index++) await s.sender.call('post', { room: 'room', from: 'Sender', to: 'all', message: `m${index}` })
+  for (let index = 0; index < 25; index++) await s.sender.call('post', { room: 'room', from: 'Sender', to: 'all', fyi: true, message: `m${index}` })
   const recent = await s.sender.call('history', { room: 'room' })
   assert.deepEqual(recent.map(item => item.message), Array.from({ length: 20 }, (_, index) => `m${index + 5}`))
   assert.deepEqual(recent.map(item => item.cursor), Array.from({ length: 20 }, (_, index) => index + 6))

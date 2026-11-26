@@ -31,7 +31,7 @@ test('a native Claude session is checked once per connection, so a slow ps later
   const service=own(createService({store,env:{},adapters,inferSession:()=>{if(++checks>1)throw Object.assign(Error('ps timed out'),{code:'CHAT_PRESENCE_UNAVAILABLE'});return claude(profile)},resolveConversation:()=>null}))
   await service.call('join_room',{room:'room',agent:'Reader'})
   for(let i=0;i<3;i++)await service.call('history',{room:'room'})
-  await service.call('post',{room:'room',from:'Reader',message:'still works'})
+  await service.call('post',{room:'room',from:'Reader',fyi:true,message:'still works'})
   assert.equal(checks,1)
 })
 

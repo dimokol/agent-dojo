@@ -190,9 +190,9 @@ test('review 5: an auto-joining post with a different from does not rename a nam
   const tab = f.native(f.claude(), CONV)
   await tab.call('join_room', { room: 'r', agent: 'Helper' })
   const refused = 'you post as Helper here; use from: Helper (or join_room with a new name to rename)'
-  await assert.rejects(tab.call('post', { room: 'fresh', from: 'claude', message: 'hi' }), { message: refused })
+  await assert.rejects(tab.call('post', { room: 'fresh', from: 'claude', fyi: true, message: 'hi' }), { message: refused })
   assert.match(refused, ALLOWED_ERROR, 'the refusal reaches the client word for word')
   assert.deepEqual(f.store.memberships().map(m => [m.room, m.agent]), [['r', 'Helper']])
-  const posted = await tab.call('post', { room: 'fresh', from: 'Helper', message: 'hi' })
+  const posted = await tab.call('post', { room: 'fresh', from: 'Helper', fyi: true, message: 'hi' })
   assert.equal(f.store.history({ room: 'fresh' }).find(m => m.id === posted.message_id).from, 'Helper')
 })

@@ -36,11 +36,35 @@ test('post takes optional fyi and urgent booleans, each described in one plain s
   const service = createService({ store: f.store, adapters: f.adapters, env: {} })
   try {
     await service.call('join_room', { room: 'room', agent: 'Sender', session: { id: 'Sender', runtime: 'manual' } })
-    for (const controls of [{ fyi: true }, { to: 'all', fyi: true }, { to: 'Reader', urgent: true }, { to: 'Reader', fyi: 'yes' }, { urgent: 1 }]) {
+    for (const controls of [{ fyi: true, urgent: true }, { to: 'Reader', urgent: true }, { to: 'Reader', fyi: 'yes' }, { urgent: 1 }]) {
       await assert.rejects(service.call('post', { room: 'room', from: 'Sender', message: 'controls', ...controls }), /invalid wake controls/)
     }
   } finally { service.close() }
   assert.equal(f.store.history({ room: 'room' }).length, 0)
+})
+
+test('a model broadcast with neither urgent nor fyi is refused and stores nothing; fyi or urgent goes through', async t => {
+  const f = fixture(t)
+  const service = createService({ store: f.store, adapters: f.adapters, env: {} })
+  try {
+    await service.call('join_room', { room: 'room', agent: 'Reader', session: { id: 'Reader', runtime: 'manual' } })
+    await service.call('join_room', { room: 'room', agent: 'Sender', session: { id: 'Sender', runtime: 'manual' } })
+    for (const controls of [{}, { to: 'all' }, { to: 'everyone', urgent: false }, { fyi: false }]) {
+      await assert.rejects(service.call('post', { room: 'room', from: 'Sender', message: 'task for PCDesk', ...controls }),
+        /broadcast must say whether it wakes anyone: set to for a peer who should act, urgent: true to wake everyone joined, or fyi: true for a note that may wait/)
+    }
+    assert.equal(f.store.history({ room: 'room' }).length, 0)
+    const note = await service.call('post', { room: 'room', from: 'Sender', message: 'note', fyi: true })
+    assert.equal(note.duplicate, undefined)
+    assert.deepEqual(note.delivery, [])
+    assert.deepEqual(f.store.pending({ room: 'room', agent: 'Reader', sessionId: 'Reader' }).map(message => message.id), [note.message_id])
+    const loud = await service.call('post', { room: 'room', from: 'Sender', message: 'standup', urgent: true })
+    // The fake adapter accepts the ring, so only the urgent broadcast reaches it.
+    assert.deepEqual(loud.delivery.map(row => [row.agent, row.state]), [['Reader', 'queued']])
+    assert.deepEqual(rung(f.rings), [['Reader', [loud.message_id]]])
+  } finally { service.close() }
+  // fyi on a broadcast is the default, so the record carries no flag an older peer would refuse.
+  assert.deepEqual(canonical(f.store).map(({ message, fyi, urgent }) => [message, fyi, urgent]), [['note', undefined, undefined], ['standup', undefined, true]])
 })
 
 test('the wake policy is stored on the canonical message and an idempotent retry cannot change it', t => {
