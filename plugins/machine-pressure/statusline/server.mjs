@@ -245,26 +245,32 @@ const pressures = new Map() // thresholds key -> { at, parts, pending }
 const thresholdKey = env => Object.keys(env).filter(k => /^(CLAUDE_PLUGIN_OPTION|MACHINE_PRESSURE)_/.test(k)).sort().map(k => `${k}=${env[k]}`).join('&')
 // A stale reading is served at once while a fresh one is taken, so no render waits for the probe
 // (except the very first).
-// windows and readings are for tests: they take the Windows path with given readings on any OS.
-export function pressureParts(env, { windows = WIN, readings } = {}) {
-  const key = thresholdKey(env)
+// drive: the session's drive (see sessionDrive), or none on a one-drive machine; its disk is measured
+// and named. windows and readings are for tests: they take the Windows path with given readings on any OS.
+export function pressureParts(env, { windows = WIN, readings, drive = null } = {}) {
+  const out = pressureReading(env, windows, readings, drive?.mount)
+  return drive?.label ? out.then(pp => pp.map(s => s.replace(/disk (?=[\d.]+G|n\/a)/, `disk ${drive.label} `))) : out
+}
+function pressureReading(env, windows, readings, mount) {
+  const key = `${thresholdKey(env)}@${mount || ''}`
   let p = pressures.get(key)
   if (!p) { if (pressures.size > 20) pressures.clear(); p = { at: 0, parts: [], pending: null }; pressures.set(key, p) }
   if (Date.now() - p.at < 4000) return Promise.resolve(p.parts)
-  const fresh = p.pending || refreshPressure(p, env, windows, readings)
+  const fresh = p.pending || refreshPressure(p, env, windows, readings, mount)
   return p.at ? Promise.resolve(p.parts) : fresh
 }
-function refreshPressure(p, env, windows, readings) {
+function refreshPressure(p, env, windows, readings, mount) {
   // A reading taken in-process is ready at once: store it without a pending promise. Set inside a
   // promise executor, done() would run before p.pending is assigned, so p.pending would never clear
   // and the segment would freeze at its first reading.
   if (windows || !PRESSURE) {
-    Object.assign(p, { at: Date.now(), parts: windows ? windowsPressure(env, readings?.()) : [], pending: null })
+    Object.assign(p, { at: Date.now(), parts: windows ? windowsPressure(env, readings?.() ?? windowsReadings(mount)) : [], pending: null })
     return Promise.resolve(p.parts)
   }
   p.pending = new Promise(resolve => {
     const done = parts => { Object.assign(p, { at: Date.now(), parts, pending: null }); resolve(parts) }
-    execFile('/bin/sh', [PRESSURE, '--segments'], { timeout: 3000, env }, (err, stdout) => {
+    // pressure.sh measures the disk of the folder it runs in.
+    execFile('/bin/sh', [PRESSURE, '--segments'], { timeout: 3000, env, ...(mount && { cwd: mount }) }, (err, stdout) => {
       done(err ? [] : stdout.split('\x1e').map(s => s.trim()).filter(Boolean))
     })
   })
@@ -302,11 +308,11 @@ function refreshCommit() {
   })
 }
 if (WIN) { cpuPercent(); refreshCommit() } // first readings, so the first render already has them
-export function windowsReadings() {
+export function windowsReadings(mount = HOME) {
   const cpu = cpuPercent()
   const ram = Math.round((1 - os.freemem() / os.totalmem()) * 100)
   let disk = null
-  try { const s = fs.statfsSync(HOME); disk = (s.bavail * s.bsize) / 2 ** 30 } catch {}
+  try { const s = fs.statfsSync(mount); disk = (s.bavail * s.bsize) / 2 ** 30 } catch {}
   refreshCommit()
   return { cpu, ram, commit: commitCharge.pct, disk }
 }
@@ -329,6 +335,65 @@ export function windowsPressure(env = process.env, { cpu, ram, commit = null, di
     seg(sDisk, disk === null ? 'disk n/a' : `disk ${disk < 10 ? disk.toFixed(1) : Math.round(disk)}G`),
     seg(worst, `pressure ${level}`),
   ]
+}
+
+// ---------- drive label: which drive the disk segment measures ----------
+// With 2+ local drives the disk segment measures the drive of the session's folder and names it:
+// "disk D: 167G" on Windows, "disk T7 400G" on macOS (volume name, 12 characters at most). The drive
+// list is read once per session, on its first render, so a session opened on a USB drive picks the
+// drive up with no periodic check. Local drives: Windows fixed and removable drives with media;
+// macOS the boot volume plus local /Volumes mounts that aren't disk images, CDs or DVDs. Network
+// shares never count. One drive, or Linux: no label, measured as before.
+export function parseWindowsDrives(out) {
+  return String(out).split(/\r?\n/).map(l => l.trim().toUpperCase()).filter(l => /^[A-Z]:$/.test(l))
+}
+export function parseMacMounts(out) {
+  const vols = []
+  for (const line of String(out).split('\n')) {
+    const m = line.match(/^\S.* on (\/Volumes\/.+) \(([^,)]+)((?:, [^,)]+)*)\)$/)
+    if (!m || /^(cd9660|udf)$/.test(m[2])) continue
+    const flags = m[3].split(', ')
+    if (flags.includes('local') && !flags.includes('nobrowse')) vols.push({ mount: m[1], name: path.basename(m[1]) })
+  }
+  return vols
+}
+export function pickDrive(folder, drives, windows = WIN) {
+  if (windows) {
+    const letter = path.win32.parse(folder).root.replace(/\\$/, '').toUpperCase()
+    return drives.includes(letter) ? { mount: `${letter}\\`, label: letter } : null
+  }
+  let real = folder
+  try { real = fs.realpathSync(folder) } catch {}
+  const hit = drives.filter(d => d.mount === '/' || real === d.mount || real.startsWith(`${d.mount}/`))
+    .sort((a, b) => b.mount.length - a.mount.length)[0]
+  return hit ? { mount: hit.mount, label: hit.name.slice(0, 12).trim() } : null
+}
+const run = (cmd, args) => new Promise(resolve =>
+  execFile(cmd, args, { timeout: 10000, windowsHide: true }, (err, out) => resolve(err ? '' : String(out))))
+async function listDrives() {
+  if (WIN) return parseWindowsDrives(await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    'Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DriveType -in 2,3 -and $_.Size } | ForEach-Object DeviceID']))
+  if (process.platform !== 'darwin') return []
+  const vols = []
+  for (const v of parseMacMounts(await run('/sbin/mount', []))) {
+    if (!/<key>BusProtocol<\/key>\s*<string>Disk Image<\/string>/.test(await run('/usr/sbin/diskutil', ['info', '-plist', v.mount]))) vols.push(v)
+  }
+  let boot = 'Macintosh HD'
+  try { boot = fs.readdirSync('/Volumes').find(n => { try { return fs.readlinkSync(path.join('/Volumes', n)) === '/' } catch { return false } }) || boot } catch {}
+  return [{ mount: '/', name: boot }, ...vols]
+}
+const sessionDrives = new Map() // session id -> { drive, ready }
+// list and windows are for tests.
+export function sessionDrive(input, { list = listDrives, windows = WIN } = {}) {
+  const id = input.session_id, folder = input.workspace?.current_dir || input.cwd
+  if (!id || !folder) return null
+  let e = sessionDrives.get(id)
+  if (e) return e
+  if (sessionDrives.size > 200) sessionDrives.clear()
+  e = { drive: null }
+  e.ready = list().then(drives => { if (drives.length > 1) e.drive = pickDrive(folder, drives, windows) }).catch(() => {})
+  sessionDrives.set(id, e)
+  return e
 }
 
 // ---------- optional load log: one sample per 10 s while tabs are open ----------
@@ -466,7 +531,7 @@ export async function render(input, configDir = '', env = requestEnv('', configD
     for (const item of line) {
       const spec = typeof item === 'string' ? { type: item } : item || {}
       if (spec.type === 'pressure') {
-        const pp = await pressureParts(env)
+        const pp = await pressureParts(env, { drive: sessionDrive(input)?.drive })
         // "icon": the level as one symbol in the level's color, in place of "pressure RED" (kept under NO_COLOR).
         parts.push(...(spec.icon && !process.env.NO_COLOR ? pp.map(s => s.replace(/pressure (RED|AMBER|OK|UNKNOWN)/, spec.icon)) : pp))
         continue
