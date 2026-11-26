@@ -90,14 +90,14 @@ test('join_room: a /name name is kept over a different join name, and the result
 
 test('a post that auto-joins uses its from name over the title, and never renames a named session', async t => {
   const f = fixture(t), service = f.native()
-  const posted = await service.call('post', { room: 'fresh', from: 'Poster', message: 'auto join' })
+  const posted = await service.call('post', { room: 'fresh', from: 'Poster', fyi: true, message: 'auto join' })
   assert.equal(f.store.history({ room: 'fresh' })[0].from, 'Poster')
   assert.equal(posted.requested, undefined)
   // Lead's decision (2.0.3 review): a later post's from no longer renames; join_room does.
-  await assert.rejects(service.call('post', { room: 'newer', from: 'Writer', message: 'auto join two' }),
+  await assert.rejects(service.call('post', { room: 'newer', from: 'Writer', fyi: true, message: 'auto join two' }),
     { message: 'you post as Poster here; use from: Poster (or join_room with a new name to rename)' })
   assert.deepEqual(roomsOf(f, 'Poster'), ['fresh'])
-  await service.call('post', { room: 'newer', from: 'Poster', message: 'auto join two' })
+  await service.call('post', { room: 'newer', from: 'Poster', fyi: true, message: 'auto join two' })
   assert.equal(f.store.history({ room: 'newer' })[0].from, 'Poster')
   assert.deepEqual(roomsOf(f, 'Poster'), ['fresh', 'newer'])
 })

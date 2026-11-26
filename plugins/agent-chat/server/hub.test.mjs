@@ -140,7 +140,7 @@ test('a shared room made on one device reaches the other, mail crosses both ways
   await pc.service.call('post', { room: 'bridge', from: 'bob', to: 'alice', message: 'PONG' })
   await until(() => mac.transport.some(frame => frame.agent === 'alice' && frame.texts.includes('PONG')), 'alice woken on the mac')
   // A broadcast crosses too, and waits in the inbox without waking, as a local one does.
-  await pc.service.call('post', { room: 'bridge', from: 'bob', to: 'all', message: 'NOTE' })
+  await pc.service.call('post', { room: 'bridge', from: 'bob', to: 'all', fyi: true, message: 'NOTE' })
   await until(async () => (await mac.service.call('inbox', { room: 'bridge', agent: 'alice' })).some(m => m.message === 'NOTE'), 'the broadcast in alice\'s inbox')
   assert.ok(!mac.transport.some(frame => frame.texts.includes('NOTE')))
 

@@ -26,7 +26,7 @@ test('native response receipt survives external rename before stdout callback',a
   service.written('inbox',args,rows,100)
   await service.call('list_rooms',{},undefined,undefined,101)
   assert.equal(store.deliveryStatus({room:'room',agent:'New'})[0].status,'received')
-  await service.call('post',{room:'room',from:'Reader',message:'old bound label'})
+  await service.call('post',{room:'room',from:'Reader',fyi:true,message:'old bound label'})
   const posted=store.history({room:'room'}).at(-1)
   assert.equal(posted.from,'New')
   assert.equal(posted.from_id,member.participant_id)
@@ -51,7 +51,7 @@ test('rename MCP operation updates all room bindings and refuses another connect
   for(const room of ['room','other'])await service.call('join_room',{room,agent:'Reader',session:{id:'a',runtime:'manual'}})
   const renamed=await service.call('rename_session',{room:'room',agent:'Reader',name:'New'})
   assert.equal(renamed.source,'explicit')
-  await service.call('post',{room:'other',from:'New',message:'new name'})
+  await service.call('post',{room:'other',from:'New',fyi:true,message:'new name'})
   const other=createService({store,env:{},adapters:{deliver:async()=>({status:'accepted'})}})
   try {await assert.rejects(other.call('rename_session',{room:'room',agent:'New',name:'Stolen'}),/join_room/)}finally{other.close()}
 })
