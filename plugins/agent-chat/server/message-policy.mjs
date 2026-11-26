@@ -3,7 +3,7 @@ export const isBroadcast=to=>broadcasts.has(String(to).toLowerCase())
 // fyi on a broadcast names the default (it waits), so it is accepted and not
 // stored: older releases refuse a broadcast record that carries fyi.
 export function postPolicy({to='all',fyi,urgent}) {
- if([fyi,urgent].some(value=>value!==undefined&&typeof value!=='boolean')||fyi===true&&urgent===true||urgent===true&&!isBroadcast(to))throw Error('invalid wake controls: urgent applies to broadcasts; a message is fyi or urgent, not both')
+ if([fyi,urgent].some(value=>value!==undefined&&typeof value!=='boolean')||fyi===true&&urgent===true||urgent===true&&!isBroadcast(to))throw Error('invalid wake controls: urgent applies to broadcasts; a message is fyi or urgent but not both')
  return {...(fyi===true&&!isBroadcast(to)?{fyi:true}:{}),...(urgent===true?{urgent:true}:{})}
 }
 // A model's broadcast must say whether it wakes anyone. Checked where a model

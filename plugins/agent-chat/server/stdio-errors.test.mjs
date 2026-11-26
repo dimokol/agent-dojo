@@ -46,6 +46,7 @@ test('fixable errors reach the client word for word', async t => {
     ['post', { room: 'room', from: 'Me', to: 'all', fyi: true, message: ' ' }],
     ['post', { room: 'room', from: 'Me', to: 'all', fyi: true, message: 'one', idempotency_key: 'k' }],
     ['post', { room: 'room', from: 'Me', to: 'all', fyi: true, message: 'two', idempotency_key: 'k' }],
+    ['post', { room: 'room', from: 'Me', message: 'task for one peer' }],
     ['ack', { room: 'room', agent: 'Me', message_ids: ['not-a-message'] }],
     ['join_room', { room: 'room', agent: 'Me', session: { id: 'other', runtime: 'manual' } }],
   ])
@@ -54,6 +55,7 @@ test('fixable errors reach the client word for word', async t => {
     'invalid session; a manual client passes session with id and runtime manual',
     'message must contain 1 to 200000 characters',
     'idempotency key reused with different message',
+    'a broadcast must say whether it wakes anyone: set to for a peer who should act, urgent: true to wake everyone joined, or fyi: true for a note that may wait',
     'message not pending for this session',
     'Me belongs to another live session; join under another name',
   ])
