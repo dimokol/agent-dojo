@@ -14,7 +14,8 @@ bad() { fail=$((fail+1)); echo "  FAIL  $1 (got: $2)"; }
 has() { case $3 in *"$2"*) ok "$1" ;; *) bad "$1 want *$2*" "$3" ;; esac; }
 
 # Unix socket paths are limited to ~104 bytes, so the state dir sits in a short temp path.
-export SHARED_STATUSLINE_DIR="$WORK/s" SHARED_STATUSLINE_CONFIG="$WORK/config.json" NO_COLOR=1
+# LOCALAPPDATA: on Windows the server looks for the real agent-chat install there, ahead of the test's stubs.
+export SHARED_STATUSLINE_DIR="$WORK/s" SHARED_STATUSLINE_CONFIG="$WORK/config.json" NO_COLOR=1 LOCALAPPDATA="$WORK/no-localappdata"
 mkdir -p "$WORK/bin"
 sh "$SRC/install.sh" "$WORK/bin" >/dev/null
 # The server is a native process; on Windows (Git Bash) only taskkill reaches it by its pid.
@@ -223,7 +224,7 @@ out=$(node --input-type=module -e "
   const { pathToFileURL } = await import('node:url')
   const { findAgentChatModule } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
   const env = { AGENT_CHAT_ROOT: '$WORK/chats', LOCALAPPDATA: '$WORK/lad', CLAUDE_CONFIG_DIR: '$WORK/nocfg' }
-  console.log('win=' + findAgentChatModule({}, env, { windows: true }) + ' mac=' + (String(findAgentChatModule({}, env, { windows: false })).includes('/lad/') ? 'lad' : 'not-lad'))")
+  console.log('win=' + String(findAgentChatModule({}, env, { windows: true })).replace(/\\\\/g, '/') + ' mac=' + (String(findAgentChatModule({}, env, { windows: false })).includes('/lad/') ? 'lad' : 'not-lad'))")
 has "found under LOCALAPPDATA on Windows" "win=$REL/releases/r1/statusline-name.mjs" "$out"
 has "not looked up there elsewhere" "mac=not-lad" "$out"
 
