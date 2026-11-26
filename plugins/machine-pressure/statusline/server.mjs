@@ -245,19 +245,25 @@ const pressures = new Map() // thresholds key -> { at, parts, pending }
 const thresholdKey = env => Object.keys(env).filter(k => /^(CLAUDE_PLUGIN_OPTION|MACHINE_PRESSURE)_/.test(k)).sort().map(k => `${k}=${env[k]}`).join('&')
 // A stale reading is served at once while a fresh one is taken, so no render waits for the probe
 // (except the very first).
-function pressureParts(env) {
+// windows and readings are for tests: they take the Windows path with given readings on any OS.
+export function pressureParts(env, { windows = WIN, readings } = {}) {
   const key = thresholdKey(env)
   let p = pressures.get(key)
   if (!p) { if (pressures.size > 20) pressures.clear(); p = { at: 0, parts: [], pending: null }; pressures.set(key, p) }
   if (Date.now() - p.at < 4000) return Promise.resolve(p.parts)
-  const fresh = p.pending || refreshPressure(p, env)
+  const fresh = p.pending || refreshPressure(p, env, windows, readings)
   return p.at ? Promise.resolve(p.parts) : fresh
 }
-function refreshPressure(p, env) {
+function refreshPressure(p, env, windows, readings) {
+  // A reading taken in-process is ready at once: store it without a pending promise. Set inside a
+  // promise executor, done() would run before p.pending is assigned, so p.pending would never clear
+  // and the segment would freeze at its first reading.
+  if (windows || !PRESSURE) {
+    Object.assign(p, { at: Date.now(), parts: windows ? windowsPressure(env, readings?.()) : [], pending: null })
+    return Promise.resolve(p.parts)
+  }
   p.pending = new Promise(resolve => {
     const done = parts => { Object.assign(p, { at: Date.now(), parts, pending: null }); resolve(parts) }
-    if (WIN) return done(windowsPressure(env))
-    if (!PRESSURE) return done([])
     execFile('/bin/sh', [PRESSURE, '--segments'], { timeout: 3000, env }, (err, stdout) => {
       done(err ? [] : stdout.split('\x1e').map(s => s.trim()).filter(Boolean))
     })

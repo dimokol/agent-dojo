@@ -140,6 +140,19 @@ out=$(node --input-type=module -e "
   process.exit(0)")
 has "commit segment and RED" "RAM 50% | commit 95% | disk 100G | pressure RED" "$out"
 
+echo "== Windows pressure keeps refreshing after the first reading"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { pressureParts } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const reads = [{ cpu: 30, ram: 40, commit: null, disk: 100 }, { cpu: 12, ram: 41, commit: 43, disk: 100 }, { cpu: 50, ram: 42, commit: 44, disk: 100 }]
+  let t = Date.now(), i = 0
+  Date.now = () => t
+  const seen = []
+  for (const r of reads) { seen.push((await pressureParts({}, { windows: true, readings: () => reads[i] })).slice(0, 3).join(' | ')); i++; t += 5000 }
+  console.log(seen.join(' / '))
+  process.exit(0)")
+has "windows readings refresh" "CPU 30% | RAM 40% | commit … / CPU 12% | RAM 41% | commit 43% / CPU 50% | RAM 42% | commit 44%" "$out"
+
 echo "== pressure icon: the level as one colored symbol"
 printf '{"lines":[[{"type":"pressure","icon":"◆"}]]}' > "$WORK/icon.json"
 out=$(env -u NO_COLOR SHARED_STATUSLINE_CONFIG="$WORK/icon.json" MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 node --input-type=module -e "
