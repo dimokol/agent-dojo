@@ -14,7 +14,8 @@ bad() { fail=$((fail+1)); echo "  FAIL  $1 (got: $2)"; }
 has() { case $3 in *"$2"*) ok "$1" ;; *) bad "$1 want *$2*" "$3" ;; esac; }
 
 # Unix socket paths are limited to ~104 bytes, so the state dir sits in a short temp path.
-export SHARED_STATUSLINE_DIR="$WORK/s" SHARED_STATUSLINE_CONFIG="$WORK/config.json" NO_COLOR=1
+# LOCALAPPDATA: on Windows the server looks for the real agent-chat install there, ahead of the test's stubs.
+export SHARED_STATUSLINE_DIR="$WORK/s" SHARED_STATUSLINE_CONFIG="$WORK/config.json" NO_COLOR=1 LOCALAPPDATA="$WORK/no-localappdata"
 mkdir -p "$WORK/bin"
 sh "$SRC/install.sh" "$WORK/bin" >/dev/null
 # The server is a native process; on Windows (Git Bash) only taskkill reaches it by its pid.
@@ -140,6 +141,19 @@ out=$(node --input-type=module -e "
   process.exit(0)")
 has "commit segment and RED" "RAM 50% | commit 95% | disk 100G | pressure RED" "$out"
 
+echo "== Windows pressure keeps refreshing after the first reading"
+out=$(node --input-type=module -e "
+  const { pathToFileURL } = await import('node:url')
+  const { pressureParts } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
+  const reads = [{ cpu: 30, ram: 40, commit: null, disk: 100 }, { cpu: 12, ram: 41, commit: 43, disk: 100 }, { cpu: 50, ram: 42, commit: 44, disk: 100 }]
+  let t = Date.now(), i = 0
+  Date.now = () => t
+  const seen = []
+  for (const r of reads) { seen.push((await pressureParts({}, { windows: true, readings: () => reads[i] })).slice(0, 3).join(' | ')); i++; t += 5000 }
+  console.log(seen.join(' / '))
+  process.exit(0)")
+has "windows readings refresh" "CPU 30% | RAM 40% | commit … / CPU 12% | RAM 41% | commit 43% / CPU 50% | RAM 42% | commit 44%" "$out"
+
 echo "== pressure icon: the level as one colored symbol"
 printf '{"lines":[[{"type":"pressure","icon":"◆"}]]}' > "$WORK/icon.json"
 out=$(env -u NO_COLOR SHARED_STATUSLINE_CONFIG="$WORK/icon.json" MACHINE_PRESSURE_RAM_AMBER=0 MACHINE_PRESSURE_RAM_RED=1 node --input-type=module -e "
@@ -161,7 +175,7 @@ out=$(node --input-type=module -e "
   const { pathToFileURL } = await import('node:url')
   const { findAgentChatModule } = await import(pathToFileURL('$WORK/bin/server.mjs').href)
   const env = { AGENT_CHAT_ROOT: '$WORK/chats', LOCALAPPDATA: '$WORK/lad', CLAUDE_CONFIG_DIR: '$WORK/nocfg' }
-  console.log('win=' + findAgentChatModule({}, env, { windows: true }) + ' mac=' + (String(findAgentChatModule({}, env, { windows: false })).includes('/lad/') ? 'lad' : 'not-lad'))")
+  console.log('win=' + String(findAgentChatModule({}, env, { windows: true })).replace(/\\\\/g, '/') + ' mac=' + (String(findAgentChatModule({}, env, { windows: false })).includes('/lad/') ? 'lad' : 'not-lad'))")
 has "found under LOCALAPPDATA on Windows" "win=$REL/releases/r1/statusline-name.mjs" "$out"
 has "not looked up there elsewhere" "mac=not-lad" "$out"
 
