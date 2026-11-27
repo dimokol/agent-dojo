@@ -98,7 +98,7 @@ eq "RED color" "$(printf '\033[31mRAM 96%%\033[0m')" "$(PCOLOR= probe --field ra
 mkenv; DISKKB=15728640; write_stubs
 eq "15 GB free is AMBER" AMBER "$(jf "$(probe --json)" .level)"
 mkenv; DISKKB=5242880; write_stubs
-eq "5 GB free is RED" RED "$(jf "$(probe --json)" .level)"
+eq "macOS: 5 GB free stops at AMBER" AMBER "$(jf "$(probe --json)" .level)"
 mkenv; LOAD="13.0"; write_stubs
 eq "load 13 on 8 cores is AMBER (1.5x = 12)" AMBER "$(jf "$(probe --json)" .level)"
 mkenv; LOAD="25.0"; write_stubs
@@ -275,7 +275,7 @@ b=$(probe --json)
 eq "second call inside 4 s reuses the sample" "$a" "$b"
 c=$(PRESSURE_CACHE_TTL=0 probe --json)
 eq "ttl 0 resamples (disk now 1 GB)" 1.0 "$(jf "$c" .disk_free_gb)"
-eq "ttl 0 resample is RED on disk" RED "$(jf "$c" .level)"
+eq "ttl 0 resample is AMBER on disk (macOS cap)" AMBER "$(jf "$c" .level)"
 mkenv
 mkdir -p "$WORK/env/a" "$WORK/env/b"
 a=$(cd "$WORK/env/a" && probe --json)

@@ -18,7 +18,7 @@
 # load average; its swap segment is the commit charge (committed memory against
 # the commit limit), named "commit", with the swap thresholds. There, as on macOS,
 # RED means memory is short: CPU and disk reach AMBER at most. Anything else
-# reports UNKNOWN. On macOS the kernel's memory pressure level
+# reports UNKNOWN. On macOS low disk also stops at AMBER, and the kernel's memory pressure level
 # (kern.memorystatus_vm_pressure_level: warn is AMBER, critical is RED) counts
 # with RAM, and swap is shown without setting the level: macOS grows swap on
 # demand and keeps pages in it long after the pressure is gone.
@@ -237,6 +237,8 @@ case $OS in MINGW*|MSYS*|CYGWIN*)
   [ "$s_cpu" -gt 1 ] && s_cpu=1
   [ "$s_disk" -gt 1 ] && s_disk=1 ;;
 esac
+# macOS: low disk is a warning, not a block (AMBER at most).
+[ "$OS" = Darwin ] && [ "$s_disk" -gt 1 ] && s_disk=1
 if [ -n "$load1" ] && [ -n "$cores" ]; then
   la=$(awk -v f="$LOAD_AMBER_X" -v c="$cores" 'BEGIN{printf "%.2f", f*c}')
   lr=$(awk -v f="$LOAD_RED_X" -v c="$cores" 'BEGIN{printf "%.2f", f*c}')
